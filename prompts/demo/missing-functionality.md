@@ -14,19 +14,6 @@ Introduce the following markets:
 - Equities
 
 #### 2.
-in the presentation layer, we can use the grouping by an asset class, so the user can find the info easier.
-Update the trait and add th issue that it may not be the best impl, it's just for the client for now
-```rust
-/// Display accessors for a market, kept separate from
-/// [`MarketInfoTrait`] so the core market facts stay free of presentation
-/// concerns.
-pub trait MarketPresentationTrait {
-    /// Returns a stable, human-readable name for the market.
-    fn display_name(&self) -> &str;
-}
-```
-
-#### 3.
 Introduce a new venue: CME
 Q: Venue for CME group or for every subsidiary?
 A: Every subsidiary

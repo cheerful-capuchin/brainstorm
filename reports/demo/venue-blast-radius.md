@@ -254,6 +254,111 @@ Venue-dependent consumers include:
 These primarily support Drift and Hyperliquid account flows. They require a
 separate account/schema change if the new venue has trading accounts.
 
+## TypeScript Venue Mirror
+
+### market-info-core
+
+GitHub: https://github.com/stxr-prop/market-info-core
+
+The TypeScript mirror is:
+
+- `ts/src/entities/venue/venue.ts:20-27,47-57`
+
+It currently defines only `None`, `Drift`, and `Hyperliquid`, while the Rust
+domain enum and protobuf enum already define eight real venues. A new TypeScript
+venue must be added consistently to:
+
+- `VENUE_ID` at `ts/src/entities/venue/venue.ts:47`
+- `T` at `ts/src/entities/venue/venue.ts:48-52`
+- the numeric/string ordering contract used by `id`, `display`, and parsing
+
+The runtime assertion at `ts/src/entities/venue/venue.ts:83-87` catches a count
+and string-ID mismatch, but it does not prove that the TypeScript values match
+Rust or protobuf values. The TypeScript numeric IDs intentionally include
+`None`, so wire conversions must preserve the documented offset.
+
+### structure-web
+
+GitHub: https://github.com/stxr-prop/structure-web
+
+The verified TypeScript compile tripwire is:
+
+- `packages/api/src/trading-accounts/trading-accounts-repository.test.ts:1095-1099`
+
+`VENUE_ACCOUNT_FN` is typed as `Record<Venue.T, ...>`. Adding a new value to the
+TypeScript mirror requires adding a corresponding fixture/account generator or
+this `satisfies` check fails.
+
+Other TypeScript consumers that require review for the new venue include:
+
+- `packages/api/src/instruments/instruments-http.ts:78,124-132`
+- `packages/api/src/instruments/instruments-repository.ts:125-147`
+- `packages/api/src/trading-accounts/trading-accounts-http.ts:35-57,98-112,797-869`
+- `packages/api/src/trading-accounts/trading-accounts-repository.test.ts:64,754,798,1042-1043`
+- `packages/api/src/delegate-accounts/delegate-accounts-repository.test.ts:144-150`
+- `packages/api/src/portfolio/portfolio-service.ts:245`
+- `packages/api/src/run.ts:574-589`
+- `packages/client/src/trading-accounts/trading-accounts-commands.ts:41-66,125-139`
+
+The API schemas currently define only Drift and Hyperliquid account
+representations. New venue account support needs new Zod schemas, request
+mapping, response mapping, and client command handling.
+
+### TypeScript wire mismatch
+
+`packages/api/src/instruments/instruments-repository.ts:132` converts a wire
+venue using `Venue.parsePrimitive(wire.venue + 1)`. With the current mirror
+size, wire values for OKX, Binance, Bybit, Coinbase, Bitget, and Gate are
+already rejected because the TypeScript mirror has no corresponding values.
+Adding a new venue requires validating this offset contract against the Rust
+primitive values and the protobuf values; merely appending a TypeScript value is
+not sufficient if the numeric ordering differs.
+
+### messaging TypeScript
+
+GitHub: https://github.com/stxr-prop/messaging
+
+The generated shared protobuf enum is:
+
+- `ts/generated/ts/types/market-info/market_info.ts:46-112`
+
+It must be regenerated after the `.proto` change. Its `venueFromJSON` and
+`venueToJSON` functions currently enumerate only the eight protobuf values and
+will otherwise return `UNRECOGNIZED` or serialize the new value incorrectly.
+
+The separate trading-account conversion remains limited to Drift and
+Hyperliquid:
+
+- `ts/src/trading-accounts.ts:31-39,88-140`
+
+That account oneof is a separate contract from `market_info.Venue`; it should
+only be expanded when the new venue has a corresponding account model.
+
+### TypeScript probe diagnostics
+
+The temporary TypeScript mirror variant was checked with `just typecheck` and
+`just typecheck client` in `structure-web`.
+
+Confirmed venue-related errors:
+
+- `packages/api/src/trading-accounts/trading-accounts-repository.test.ts:1099`
+  - `VENUE_ACCOUNT_FN` is missing the new `Record<Venue.T, ...>` key.
+- `../messaging/ts/src/trading-accounts.ts:139`
+  - `unreachablef(account.venue, ...)` no longer accepts the expanded venue type.
+- `packages/client/src/market-data/market-data-commands.ts:113`
+  - The API-client venue string union is stale and rejects the new string ID.
+
+The same checks also reported pre-existing unrelated errors in generated API
+types and trading-account event fixtures; they are not attributed to the Venue
+change:
+
+- `packages/api/src/portfolio/portfolio-history-repository.ts:25`
+- `packages/api/src/positions/positions-repository.ts:31`
+- `packages/client/src/trading-accounts/states/running/events.test.ts:143,153`
+- `packages/client/src/trading-accounts/trading-accounts-commands.ts:45,57`
+
+The temporary TypeScript variant was removed after the probe.
+
 ## Verification Notes
 
 Commands used:

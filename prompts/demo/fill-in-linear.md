@@ -83,6 +83,9 @@ The existing prototype already extracts `exchange` from `InstrumentDefMsg` along
 #### Task
 Update the `Venue` enums in both rust and typescript domain models.
 
+- market-info-core/rust/src/entities/venue.rs
+- market-info-core/ts/src/entities/venue/venue.ts
+
 TODO(ai): attach the content of the file (brainstorm/reports/demo/venue-blast-radius.md) as a comment
 
 

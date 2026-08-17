@@ -21,8 +21,7 @@ We need to embed the market info on the client, since it removes the need to fet
 ### Create a client core rust wasm module and put the StaticMktInfoRepo there
 cost: 2 points, assignee: nilgiri
 
-- create a github repo
-- create a rust crate
+- https://github.com/stxr-prop/client
 - design the API to get the market info to typescript with the Presentation Information
 - build as WASM
 
@@ -302,13 +301,6 @@ assignee: marmoset; estimate: 1 point
 
 just embed the solana keypair and always authenticate that user
 
-
->>>---
-
-## Tick Navigator
-
-### Design the UI
-label: design; assignee: gorilla; estimate: 4 points
 
 >>>---
 

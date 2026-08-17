@@ -30,10 +30,10 @@ This analysis uses the walkthrough as the demo contract and distinguishes living
 - [Market info reference](../../../knowledge-base/docs/references/market-info.md) — current market-info scope and unresolved futures/index-point semantics.
 - [DEC-08T3R: Databento integration architecture](../../../knowledge-base/docs/decisions/records/DEC-08T3R-databento-integration-architecture.md) — **proposed**, not implemented; deliberately leaves domain venues, consumers, and historical replay/backfill undecided.
 - [ISS-099M9: demo replays historical Databento as live](../../../knowledge-base/docs/issues/records/ISS-099M9-demo-replays-historical-databento-data-as-live.md) — historical replay does not prove live identity, ordering, reconnect, or gap recovery.
-- [ISS-099MC: Tick Navigator trace is precomputed](../../../knowledge-base/docs/issues/records/ISS-099MC-tick-navigator-trace-is-precomputed.md) — current trace limitation.
-- [ISS-09K80: backtest results omit execution-cost evidence](../../../knowledge-base/docs/issues/records/ISS-09K80-backtest-results-omit-execution-cost-evidence.md) — missing volume, fees, and slippage evidence.
-- [ISS-09FBY: variables are bound at revision creation](../../../knowledge-base/docs/issues/records/ISS-09FBY-strategy-variables-are-bound-at-revision-creation.md) — revision/deployment configuration mismatch.
-- [ISS-08ZTF: accounts are attached to strategies](../../../knowledge-base/docs/issues/records/ISS-08ZTF-trading-accounts-are-attached-to-strategies-instead-of-deployments.md) — deployment ownership mismatch.
+- [ISS-099MC: Tick Navigator trace is precomputed](../../../knowledge-base/docs/issues/records/ISS-099MC-tick-navigator-uses-precomputed-trace-data.md) — current trace limitation.
+- [ISS-09K80: backtest results omit execution-cost evidence](../../../knowledge-base/docs/issues/records/ISS-09K80-backtest-results-accounting.md) — missing volume, fees, and slippage evidence.
+- [ISS-09FBY: variables are bound at revision creation](../../../knowledge-base/docs/issues/records/ISS-09FBY-application-server-must-accept-strategy-variables.md) — revision/deployment configuration mismatch.
+- [ISS-08ZTF: accounts are attached to strategies](../../../knowledge-base/docs/issues/records/ISS-08ZTF-attach-trading-accounts-to-strategy-deployments.md) — deployment ownership mismatch.
 - [DEC-09S6G: strategy performance feed](../../../knowledge-base/docs/decisions/records/DEC-09S6G-strategy-performance-feed.md) — proposed feed contract that explicitly diverges from current living specifications.
 
 Official Databento constraints used here:

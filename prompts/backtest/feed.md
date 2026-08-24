@@ -31,7 +31,7 @@ The price sampler will emit prices on:
 This is the last carried price
 
 
-```rust
+```
 use std::time::Duration;
 
 pub struct DictionaryRef(u16);
@@ -548,4 +548,69 @@ HasIdentity<Id = BacktestRunEventId>
     /// Declared accounting treatment of the deposited asset.
     fn declared_cost_basis(&self) -> DeclaredCostBasis;
 }
+
+pub enum FeeProvenance {
+    Fill { event_id: BacktestRunEventId }
+}
+
+// Note: this is only for the demo to look good.
+// The actual data model may be different. For instance, we need a classification of the fee
+pub trait DemoOnlyFee:
+HasIdentity<Id = BacktestRunEventId>
++ HasTracing<Id = BacktestRunTraceId>
++ HasFeedOrderand<Orderand = BacktestFeedOrderand>
++ HasProvenance<Item = FeeProvenance>
+{
+    /// Simulated time when the deposit becomes effective in the account.
+    fn event_time(&self) -> NanoTimestamp;
+
+    /// Account receiving the capital.
+    fn trading_account_ref(&self) -> AccountRef;
+
+    fn instrument_ref(&self) -> InstrumentRef;
+
+    fn fee(&self) -> numerics::Qty
+}
 ```
+
+---
+knowledge-base/docs/decisions/records/DEC-0A5FN-backtest-feed-emits-raw-economic-events.md
+
+I want to add the fees to the demo
+```
+pub enum FeeProvenance {
+    Fill { event_id: BacktestRunEventId }
+}
+
+// Note: this is only for the demo to look good.
+// The actual data model may be different. For instance, we need a classification of the fee
+pub trait DemoOnlyFee:
+HasIdentity<Id = BacktestRunEventId>
++ HasTracing<Id = BacktestRunTraceId>
++ HasFeedOrderand<Orderand = BacktestFeedOrderand>
++ HasProvenance<Item = FeeProvenance>
+{
+    /// Simulated time when the deposit becomes effective in the account.
+    fn event_time(&self) -> NanoTimestamp;
+
+    /// Account receiving the capital.
+    fn trading_account_ref(&self) -> AccountRef;
+
+    fn instrument_ref(&self) -> InstrumentRef;
+
+    fn fee(&self) -> numerics::Qty
+}
+```
+
+it's intentionally opaque and may be missing some info, but it's fine for the demo in a week.
+Update the decision doc to add the info and then update the knowledge-base/docs/specs/SPEC-backtest-feed.md (both rust and protobuf)
+
+
+---
+
+knowledge-base/docs/execution-plans/records/PLAN-0A6VM-backtest-feed-contract-and-protobuf-feature.md
+1. there is no BacktestResultEvent enum
+2. There are no canonical event structs, only traits
+3. How do you plan on reusing the protobuf schemas if you put it in backtest-feed/proto/backtest-feed/v1/backtest_feed.proto?
+4. `Keep all conversions and conversion errors within the `#[cfg(feature = "protobuf")]` module`. You can keep some structs outside of the feature. It depends whether the errors are protobuf specific.
+5.

@@ -98,8 +98,8 @@ create table if not exists triggering_source_events (
     strategy_deployment_id         UInt64,
 
     -- Semantic Event --
-    event_time                     UInt64                  comment 'when the event happened on the venue',
-    observe_time                   UInt64                  comment 'when our system first observed this event',
+    event_time                     DateTime64(9, 'UTC')    comment 'when the event happened on the venue',
+    observe_time                   DateTime64(9, 'UTC')    comment 'when our system first observed this event',
 
     -- Injestion --
     injestion_time                 DateTime64(9, 'UTC')    comment 'when the event was written to the database',
@@ -123,7 +123,7 @@ create table if not exists target_positions (
     strategy_deployment_id         UInt64,
 
     -- Semantic Event --
-    event_time                     UInt64                  comment 'when the event happened in the strategy',
+    event_time                     DateTime64(9, 'UTC')    comment 'when the event happened in the strategy',
 
     -- Injestion --
     injestion_time                 DateTime64(9, 'UTC')    comment 'when the event was written to the database',
@@ -162,8 +162,8 @@ create table if not exists fills (
     trading_account_id             UInt64,
 
     -- Semantic Event --
-    event_time                     UInt64                  comment 'when the event happened on the venue',
-    observe_time                   UInt64                  comment 'when our system first observed this event',
+    event_time                     DateTime64(9, 'UTC')    comment 'when the event happened on the venue',
+    observe_time                   DateTime64(9, 'UTC')    comment 'when our system first observed this event',
     instrument_id                  UInt64                  comment 'market reference',
     -- todo: can the price be negative?
     price                          Int128                  comment 'in market''s quote unit',
@@ -196,8 +196,8 @@ create table if not exists demo_fees (
     trading_account_id             UInt64,
 
     -- Semantic Event --
-    event_time                     UInt64                  comment 'when the event happened on the venue',
-    observe_time                   UInt64                  comment 'when our system first observed this event',
+    event_time                     DateTime64(9, 'UTC')    comment 'when the event happened on the venue',
+    observe_time                   DateTime64(9, 'UTC')    comment 'when our system first observed this event',
     instrument_id                  UInt64                  comment 'market reference',
 
     fee                            Int128,
@@ -221,8 +221,8 @@ create table if not exists position_updates (
     event_data                     String CODEC(ZSTD(3))   comment 'raw representation of the event',
 
     -- Semantic Event --
-    event_time                     UInt64                  comment 'when the event happened on the venue',
-    observe_time                   UInt64                  comment 'when our system first observed this event',
+    event_time                     DateTime64(9, 'UTC')    comment 'when the event happened on the venue',
+    observe_time                   DateTime64(9, 'UTC')    comment 'when our system first observed this event',
 
     coverage                       UInt8                   comment 'full/partial',
     amount_semantics               UInt8                   comment 'absolute/increment',
@@ -258,7 +258,7 @@ create table if not exists account_trading_volume (
     frontier_event_id         UInt128 comment 'latest event included in the metrics',
     frontier_orderand         UInt64  comment  'latest orderand included in the metrics',
 
-    effective_time            UInt64,
+    effective_time            DateTime64(9, 'UTC'),
 
     trading_account_id        UInt64,
     instrument_id             UInt64,
@@ -277,7 +277,7 @@ create table if not exists account_position_aggregate (
     frontier_event_id         UInt128 comment 'latest event included in the metrics',
     frontier_orderand         UInt64  comment  'latest orderand included in the metrics',
 
-    effective_time            UInt64,
+    effective_time            DateTime64(9, 'UTC'),
 
     trading_account_id        UInt64,
 

@@ -51,15 +51,14 @@ it doesn't mean we buffer the durability. We store the event ASAP, but the fold 
 ```
 create table if not exists deposits (
     -- Identity --
-    event_id                       UInt128 comment 'globally unique identifier and the idempotency key',
-    trace_id                       UInt128 comment 'Trace identifier for correlating related events across services.\nNot unique — many events can share the same trace.',
+    event_id                       UInt128                 comment 'globally unique identifier and the idempotency key',
+    trace_id                       UInt128                 comment 'Trace identifier for correlating related events across services.\nNot unique — many events can share the same trace.',
 
     -- Feed --
-    feed_id                        UInt256 comment 'source feed the event arrived on',,
-    revision_id                    UInt256,
-    encoding                       Enum8('protobuf' = 0, 'msgpack' = 1, 'sbe' = 2, 'json' = 3, 'rkyv' = 4),
-    -- todo: do I need to handle the compression myself or can clickhouse do it?
-    data                           String CODEC(ZSTD(3)) comment 'raw representation of the event',
+    feed_id                        UInt256                 comment 'source feed the event arrived on',
+    feed_revision_id               UInt256,
+    feed_encoding                  Enum8('protobuf' = 0, 'msgpack' = 1, 'sbe' = 2, 'json' = 3, 'rkyv' = 4),
+    event_data                     String CODEC(ZSTD(3))   comment 'raw representation of the event',
 
     -- Subject --
     trading_account_id             UInt64,
@@ -79,44 +78,56 @@ create table if not exists deposits (
 
     -- Injestion --
     injestion_time                 DateTime64(9, 'UTC') comment 'when the event was written to the database',
-    injestion_orderand             UInt128 comment 'how the injester ordred the ',
+    injestion_orderand             UInt128              comment 'order in which the database writer received the event',
 );
 
 create table if not exists triggering_source_events (
-    -- Identity
-    event_id                        UInt128 comment 'globally unique identifier and the idempotency key',
-    trace_id                        UInt128 comment 'Trace identifier for correlating related events across services.\nNot unique — many events can share the same trace.',
+    -- Identity --
+    event_id                       UInt128                 comment 'globally unique identifier and the idempotency key',
+    trace_id                       UInt128                 comment 'Trace identifier for correlating related events across services.\nNot unique — many events can share the same trace.',
 
-    -- Feed
-    feed_id                         UInt256,
-    revision_id                     UInt256,
-    encoding                        UInt8 comment 'Protobuf, JSON, SBE, RKYV, etc',
+    -- Feed --
+    feed_id                        UInt256,
+    feed_revision_id               UInt256,
+    feed_encoding                  Enum8('protobuf' = 0, 'msgpack' = 1, 'sbe' = 2, 'json' = 3, 'rkyv' = 4),
+    event_data                     String CODEC(ZSTD(3))   comment 'raw representation of the event',
 
-    -- Subject
-    strategy_id             UInt64,
-    revision_id             UInt64,
-    deployment_id           UInt64,
+    -- Subject --
+    strategy_id                    UInt64,
+    strategy_revision_id           UInt64,
+    strategy_deployment_id         UInt64,
 
-    -- Time
-    event_time UInt64 comment 'when the event happened on the venue',
-    observe_time UInt64 comment 'when our system first observed this event',
+    -- Semantic Event --
+    event_time                     UInt64                  comment 'when the event happened on the venue',
+    observe_time                   UInt64                  comment 'when our system first observed this event',
 
-    -- todo: do I need to handle the compression myself or can clickhouse do it?
-    data blob comment 'raw representation of the event',
-
-    injestion_orderand      UInt128,
+    -- Injestion --
+    injestion_time                 DateTime64(9, 'UTC')    comment 'when the event was written to the database',
+    injestion_orderand             UInt128                 comment 'order in which the database writer received the event',
 );
 
 create table if not exists target_positions (
-    event_id UInt128 comment 'globally unique identifier and the idempotency key',
-    trace_id UInt128 comment 'Trace identifier for correlating related events across services.\nNot unique — many events can share the same trace.',
-    feed_id UInt256,
-    revision_id UInt256,
-    encoding UInt8 comment 'Protobuf, JSON, SBE, RKYV, etc',
-    event_time UInt64 comment 'when the event happened in the strategy',
+    -- Identity --
+    event_id                       UInt128                 comment 'globally unique identifier and the idempotency key',
+    trace_id                       UInt128                 comment 'Trace identifier for correlating related events across services.\nNot unique — many events can share the same trace.',
 
-    -- todo: do I need to handle the compression myself or can clickhouse do it?
-    data blob comment 'raw representation of the event'
+    -- Feed --
+    feed_id                        UInt256,
+    feed_revision_id               UInt256,
+    feed_encoding                  Enum8('protobuf' = 0, 'msgpack' = 1, 'sbe' = 2, 'json' = 3, 'rkyv' = 4),
+    event_data                     String CODEC(ZSTD(3))   comment 'raw representation of the event',
+
+    -- Subject --
+    strategy_id                    UInt64,
+    strategy_revision_id           UInt64,
+    strategy_deployment_id         UInt64,
+
+    -- Semantic Event --
+    event_time                     UInt64                  comment 'when the event happened in the strategy',
+
+    -- Injestion --
+    injestion_time                 DateTime64(9, 'UTC')    comment 'when the event was written to the database',
+    injestion_orderand             UInt128                 comment 'order in which the database writer received the event',
 );
 
 -- todo: is clickhouse good at joining?
@@ -137,63 +148,88 @@ create table if not exists target_positions_items (
 )
 
 create table if not exists fills (
-    event_id                   UInt128 comment 'globally unique identifier and the idempotency key',
-    trace_id                   UInt128 comment 'Trace identifier for correlating related events across services.\nNot unique — many events can share the same trace.',
-    feed_id                    UInt256,
-    revision_id                UInt256,
-    encoding                   UInt8 comment 'Protobuf, JSON, SBE, RKYV, etc',
-    event_time                 UInt64 comment 'when the event happened on the venue',
-    observe_time               UInt64 comment 'when our system first observed this event',
-    instrument_id              UInt64 comment 'market reference',
-    trading_account_id         UInt64,
-    -- todo: can the price be negative?
-    price                      Int128, comment 'in market''s quote unit'
-    -- todo: bind it to the market info
-    price_scale                UInt8,
-    quantity                   UInt128,
-    -- todo: bind it to the market info
-    quantity_scale             UInt8,
-    side                       UInt8 comment 'buy/sell/sell short',
-    liquidity_role             UInt8 comment 'maker/taker',
+    -- Identity --
+    event_id                       UInt128                 comment 'globally unique identifier and the idempotency key',
+    trace_id                       UInt128                 comment 'Trace identifier for correlating related events across services.\nNot unique — many events can share the same trace.',
 
-    -- todo: do I need to handle the compression myself or can clickhouse do it?
-    data blob comment 'raw representation of the event'
+    -- Feed --
+    feed_id                        UInt256,
+    feed_revision_id               UInt256,
+    feed_encoding                  Enum8('protobuf' = 0, 'msgpack' = 1, 'sbe' = 2, 'json' = 3, 'rkyv' = 4),
+    event_data                     String CODEC(ZSTD(3))   comment 'raw representation of the event',
+
+    -- Subject --
+    trading_account_id             UInt64,
+
+    -- Semantic Event --
+    event_time                     UInt64                  comment 'when the event happened on the venue',
+    observe_time                   UInt64                  comment 'when our system first observed this event',
+    instrument_id                  UInt64                  comment 'market reference',
+    -- todo: can the price be negative?
+    price                          Int128                  comment 'in market''s quote unit',
+    -- todo: bind it to the market info
+    price_scale                    UInt8,
+    quantity                       UInt128,
+    -- todo: bind it to the market info
+    quantity_scale                 UInt8,
+    side                           UInt8                   comment 'buy/sell/sell short',
+    liquidity_role                 UInt8                   comment 'maker/taker',
+
+    -- Injestion --
+    injestion_time                 DateTime64(9, 'UTC')    comment 'when the event was written to the database',
+    injestion_orderand             UInt128                 comment 'order in which the database writer received the event',
 );
 
 
 create table if not exists demo_fees (
-    event_id                   UInt128 comment 'globally unique identifier and the idempotency key',
-    trace_id                   UInt128 comment 'Trace identifier for correlating related events across services.\nNot unique — many events can share the same trace.',
-    feed_id                    UInt256,
-    revision_id                UInt256,
-    encoding                   UInt8 comment 'Protobuf, JSON, SBE, RKYV, etc',
-    event_time                 UInt64 comment 'when the event happened on the venue',
-    observe_time               UInt64 comment 'when our system first observed this event',
-    instrument_id              UInt64 comment 'market reference',
-    trading_account_id         UInt64,
+    -- Identity --
+    event_id                       UInt128                 comment 'globally unique identifier and the idempotency key',
+    trace_id                       UInt128                 comment 'Trace identifier for correlating related events across services.\nNot unique — many events can share the same trace.',
 
-    fee                        Int128,
+    -- Feed --
+    feed_id                        UInt256,
+    feed_revision_id               UInt256,
+    feed_encoding                  Enum8('protobuf' = 0, 'msgpack' = 1, 'sbe' = 2, 'json' = 3, 'rkyv' = 4),
+    event_data                     String CODEC(ZSTD(3))   comment 'raw representation of the event',
+
+    -- Subject --
+    trading_account_id             UInt64,
+
+    -- Semantic Event --
+    event_time                     UInt64                  comment 'when the event happened on the venue',
+    observe_time                   UInt64                  comment 'when our system first observed this event',
+    instrument_id                  UInt64                  comment 'market reference',
+
+    fee                            Int128,
     -- todo: bind it to market info?
-    fee_scale                  UInt8,
+    fee_scale                      UInt8,
 
-    -- todo: do I need to handle the compression myself or can clickhouse do it?
-    data blob comment 'raw representation of the event'
+    -- Injestion --
+    injestion_time                 DateTime64(9, 'UTC')    comment 'when the event was written to the database',
+    injestion_orderand             UInt128                 comment 'order in which the database writer received the event',
 );
 
 create table if not exists position_updates (
-    event_id                   UInt128 comment 'globally unique identifier and the idempotency key',
-    trace_id                   UInt128 comment 'Trace identifier for correlating related events across services.\nNot unique — many events can share the same trace.',
-    feed_id                    UInt256,
-    revision_id                UInt256,
-    encoding                   UInt8 comment 'Protobuf, JSON, SBE, RKYV, etc',
-    event_time                 UInt64 comment 'when the event happened on the venue',
-    observe_time               UInt64 comment 'when our system first observed this event',
+    -- Identity --
+    event_id                       UInt128                 comment 'globally unique identifier and the idempotency key',
+    trace_id                       UInt128                 comment 'Trace identifier for correlating related events across services.\nNot unique — many events can share the same trace.',
 
-    coverage                   UInt8 comment 'full/partial',
-    amount_semantics           UInt8 comment 'absolute/increment',
+    -- Feed --
+    feed_id                        UInt256,
+    feed_revision_id               UInt256,
+    feed_encoding                  Enum8('protobuf' = 0, 'msgpack' = 1, 'sbe' = 2, 'json' = 3, 'rkyv' = 4),
+    event_data                     String CODEC(ZSTD(3))   comment 'raw representation of the event',
 
-    -- todo: do I need to handle the compression myself or can clickhouse do it?
-    data blob comment 'raw representation of the event'
+    -- Semantic Event --
+    event_time                     UInt64                  comment 'when the event happened on the venue',
+    observe_time                   UInt64                  comment 'when our system first observed this event',
+
+    coverage                       UInt8                   comment 'full/partial',
+    amount_semantics               UInt8                   comment 'absolute/increment',
+
+    -- Injestion --
+    injestion_time                 DateTime64(9, 'UTC')    comment 'when the event was written to the database',
+    injestion_orderand             UInt128                 comment 'order in which the database writer received the event',
 );
 
 create table if not exists derivative_position_updates (

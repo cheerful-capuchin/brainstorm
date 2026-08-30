@@ -2,68 +2,75 @@
 
 Date: 2026-08-30
 
-## Scope
+## Implemented Contract
 
-Implemented only the trait surface needed to describe futures markets in the
-`market-info` crate:
+The `market-info` trait hierarchy now models derivatives directly:
 
-- `DerivativeMarketTrait`, as the common parent contract required by
-  `FutureMarketTrait`;
-- `FutureMarketTrait` with `trading_termination_time` and
-  `settlement_method`;
-- `FutureSettlementMethod`, with cash and physical-delivery variants;
-- the `time` dependency used by the futures nanosecond timestamps.
+```rust
+pub trait DerivativeMarketTrait: MarketInfoTrait {
+    fn underlying(&self) -> &Underlying;
+    fn settlement_asset(&self) -> &Asset;
+    fn quote_unit(&self) -> QuoteUnit;
+    fn settlement_qty_per_quote_unit(&self) -> Decimal;
+    fn contract_id(&self) -> ContractId;
+}
+
+pub trait PerpMarketTrait: DerivativeMarketTrait {
+    fn funding_asset(&self) -> &Asset;
+}
+
+pub trait FutureMarketTrait: DerivativeMarketTrait {
+    fn trading_termination_time(&self) -> NanoTimestamp;
+    fn settlement_method(&self) -> &FutureSettlementMethod;
+}
+```
+
+The former blanket forwarding implementation was removed. `PerpMarketInfo`,
+`DriftPerpMarketInfo`, `HlPerpMarketInfo`, and the market-info mock now
+implement `DerivativeMarketTrait` explicitly. `PerpMarketTrait` contains only
+the perpetual-specific funding capability.
+
+`Underlying` is the only derivative-underlying name. Existing source,
+generator, and generated-catalog references were renamed from
+`PerpUnderlying`. There is no compatibility alias and `Underlying` has no
+helper-method implementation; consumers distinguish `Asset` and `Ticker` by
+pattern matching.
 
 All futures lifecycle fields use `time::NanoTimestamp`:
-`trading_termination_time`, `final_settlement_time`, `first_notice_time`, and
-`last_delivery_time`.
 
-`MarketInfoType` remains unchanged: it still exposes only spot and perpetual
-associated types, accessors, and dispatch closures. No future market struct,
-repository integration, enum variant, quote-unit expansion, underlying rename,
-instrument-type change, wire conversion, or TypeScript mirror was introduced.
+- `trading_termination_time`;
+- `final_settlement_time`;
+- `first_notice_time`;
+- `last_delivery_time`.
 
-Existing perpetual implementations receive `DerivativeMarketTrait` through a
-blanket compatibility implementation. This keeps their existing
-`PerpMarketTrait` implementations and consumers unchanged while allowing new
-future market types to implement the common derivative contract directly.
+`MarketInfoType` and the `MarketInfo` enum remain spot/perpetual only. No future
+associated type, accessor, dispatch closure, or enum variant was introduced.
 
 ## Verification
 
-No tests were added, changed, or run.
+No test cases were added or run. The existing market-info mock implementation
+was split across the derivative and perpetual traits with the production
+implementations.
 
-The touched Rust source passes targeted formatting:
+- `cargo check --offline -p market-info`: success with existing warnings.
+- Targeted `rustfmt --check`: success.
+- `git diff --check`: success.
+- `trade`, `trade-core`, `trade_v2`, and Coin API compile across all targets.
+- `strats_v2` compiles across all targets with its binary feature.
+- `dsl-runtime`, `marketdata`, and `client-core` compile.
 
-```text
-rustfmt --check --edition 2024 --config skip_children=true src/market_info.rs
-```
+## Consumer Migration
 
-The market-info library compiles:
+Downstream consumers now import `DerivativeMarketTrait` when they use
+underlying, settlement, multiplier, or contract capabilities. This includes
+portfolio valuation, trade fixtures, Coin API generation, target-executor test
+support, and backtest artifact projection.
 
-```text
-CARGO_TARGET_DIR=/tmp/cme-mkt-info-target RUSTC_WRAPPER= \
-  cargo check --offline -p market-info --lib
+Consumers of asset-backed underlyings now pattern-match
+`Underlying::Asset`. Generic consumers explicitly handle
+`Underlying::Ticker`; test repositories return `false` for ticker-backed
+markets when filtering by asset id.
 
-Result: success with pre-existing warnings.
-```
-
-## Broken Usage Report
-
-No market-info usage was broken by this additive trait change.
-
-A full workspace check does not complete because of this existing, unrelated
-error:
-
-```text
-error: use of deprecated method
-`market_info::mkt_info_repo::traits::MktInfoRepo::get_mkt_info`:
-use get_by_instrument
-  --> feed-info/rust/src/feed_info_repo/indexes.rs:124:14
-```
-
-The `feed-info` crate denies warnings, so the deprecation is an error. It was
-not fixed as requested.
-
-The repository-wide formatter check also reports pre-existing formatting drift
-in generated Hyperliquid files and `market_info/drift/drift_mkt_info.rs`. Those
-files were not reformatted or otherwise changed.
+The backtest post-processor was updated by inspection. Cargo cannot check it
+from this workspace because the package is neither a workspace member nor
+listed in `workspace.exclude`.

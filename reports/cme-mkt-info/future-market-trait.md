@@ -12,7 +12,11 @@ Implemented only the trait surface needed to describe futures markets in the
 - `FutureMarketTrait` with `trading_termination_time` and
   `settlement_method`;
 - `FutureSettlementMethod`, with cash and physical-delivery variants;
-- the `time` dependency used by the futures timestamps.
+- the `time` dependency used by the futures nanosecond timestamps.
+
+All futures lifecycle fields use `time::NanoTimestamp`:
+`trading_termination_time`, `final_settlement_time`, `first_notice_time`, and
+`last_delivery_time`.
 
 `MarketInfoType` remains unchanged: it still exposes only spot and perpetual
 associated types, accessors, and dispatch closures. No future market struct,

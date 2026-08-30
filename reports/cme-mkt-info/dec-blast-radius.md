@@ -122,7 +122,7 @@ Adding this definition by itself is low blast radius:
 
 ```rust
 pub trait FutureMarketTrait: DerivativeMarketTrait {
-    fn trading_termination_time(&self) -> Timestamp;
+    fn trading_termination_time(&self) -> NanoTimestamp;
     fn settlement_method(&self) -> &FutureSettlementMethod;
 }
 ```
@@ -219,51 +219,6 @@ Semantic risk: the multiplier must remain the sole notional/P&L conversion
 input. If a consumer applies both `scale_exponent` and the already-scaled
 multiplier, ZC is double-scaled. The DEC states this intent, but the invariant
 needs tests and wire documentation.
-
-### Future lifecycle state
-
-`FutureSettlementMethod` prevents some invalid combinations by keeping
-delivery-only fields out of cash-settled contracts. It does not by itself
-prevent invalid chronology or malformed identifiers.
-
-The model still needs to define and validate at least:
-
-- exact `Timestamp` type and precision;
-- timezone and conversion to the canonical instant;
-- whether termination is inclusive or exclusive;
-- whether it means the last possible trade, the order-entry cutoff, or the
-  exchange session close;
-- `first_notice_time < last_delivery_time`;
-- permitted relationships between first notice and trading termination;
-- permitted relationships between termination and final cash settlement;
-- non-empty/canonical underlying and index tickers;
-- an allowed range for `scale_exponent`;
-- consistency between `InstrumentType::FUTURE` and `MarketInfo::Future`;
-- the parse/construction boundary at which invalid CME data is rejected;
-- the error returned when generation or parsing fails.
-
-The decision currently treats materialized calendar timestamps as fixed
-contract facts. It must still define what happens when CME corrects a calendar
-or the ingestion process discovers bad data.
-
-### Catalog and source ownership
-
-The current static list in
-`market-info/src/market_info/market_info_list.rs` combines Drift and
-Hyperliquid. There is no CME contract-month catalog, generator, source fixture,
-or update owner.
-
-A complete introduction requires:
-
-- a dedicated CME input/configuration format;
-- one entry per contract month rather than one entry per product family;
-- pinned source fixtures or source-version metadata;
-- deterministic generation;
-- duplicate instrument- and contract-ID detection;
-- handling of corrections and newly listed months;
-- retention of delisted months for historical references;
-- tests for the ten launch products and multiple contract months;
-- a publication mechanism into the market-info repository/server.
 
 ### Execution remains unsupported
 
@@ -811,82 +766,6 @@ dispatch and protocol migration.
 - Replaying a run uses the same calendar/reference version.
 - A rollback can stop future publication without corrupting existing catalog
   readers or IDs.
-
-## Architecture Decision Checklist Review
-
-- Core entities: partially covered. Future contract and market concepts are
-  named, but canonical identity, correction behavior, ownership, and
-  contract-to-instrument lifecycle are incomplete.
-- Traits: partially covered. Capabilities are divided sensibly, but migration,
-  bounds, unsupported behavior, and compatibility are incomplete.
-- Contracts: missing. Exact wire fields, timestamp semantics, settlement-price
-  source, limits, versioning, and update notification are unspecified.
-- States: missing. Construction/parsing boundaries and chronology invariants are
-  unspecified.
-- Tests: missing. Product field examples do not cover compatibility, identity,
-  invalid states, replay, or downstream behavior.
-- Observability: missing. There is no catalog provenance, correction audit,
-  source revision, metric, or operational error plan.
-- Why are we doing this: covered. Dated derivatives and non-asset quote units
-  are concrete needs.
-- Replay/audit: missing. Expiry, settlement, calendar correction, and position
-  identity are not replay-defined.
-
-Decision readiness: **blocked**.
-
-## Questions That Must Be Answered Before Acceptance
-
-1. Which exact protobufs change, and what tags are assigned to every new enum,
-   oneof, quote-unit, and settlement field?
-2. How must old readers behave when they receive `FUTURE = 2` or a future
-   market-info oneof?
-3. How is non-zero quote scale prevented from being silently ignored?
-4. What exact timestamp type, precision, timezone, and boundary convention is
-   used?
-5. Does `trading_termination_time` mean last trade, order-entry cutoff, or
-   session close?
-6. What chronological invariants apply to termination, first notice, final
-   settlement, and last delivery?
-7. What source generates contract months and lifecycle facts, who owns it, and
-   how are source version and corrections recorded?
-8. Are corrected symbols or calendar facts identity-preserving updates?
-9. Is `ContractId` permanently derived from `InstrumentId` for futures?
-10. Are derivative positions keyed by contract, instrument, or both?
-11. Where does the final settlement price come from, and how is delayed
-    publication represented?
-12. What exactly happens to an open cash-settled position at settlement?
-13. What exactly happens before first notice for a physically delivered
-    position?
-14. Are daily variation margin, margin requirements, roll behavior, and trading
-    sessions intentionally out of scope? Which launch consumers prove that they
-    are not required yet?
-15. How is the SR3 front-month tick represented without violating
-    `min_px_inc`?
-16. Will old two-way dispatch remain temporarily, or is this an atomic
-    cross-repository migration?
-17. Which teams/repositories own each migration step?
-18. What is the rollback plan after future catalog publication?
-19. Which earlier decisions, references, and specs are superseded or updated?
-
-## Knowledge-Base Consequences
-
-Acceptance and implementation require coordinated updates to at least:
-
-- `knowledge-base/docs/references/market-info.md`;
-- `knowledge-base/docs/references/contract.md` if identity semantics change;
-- `knowledge-base/docs/references/position.md` if implementation identity is
-  reconciled;
-- `DEC-08Y0M: First-Class Perpetual Quote Unit` through an explicit relationship
-  and provenance update;
-- `DEC-08NXH: Market Info Server` and the market-info server specification if
-  the published sum type changes;
-- backtest feed specifications/plans that expose spot/perpetual-only views;
-- any execution or risk specification that begins relying on termination and
-  settlement fields.
-
-The living `REF:market-info` projection and this decision must change together
-when the decision is accepted, so the present-tense model never remains
-spot/perpetual-only after futures become canonical.
 
 ## Final Assessment
 

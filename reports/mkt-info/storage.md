@@ -9,7 +9,7 @@ Traceability: `request_backed`. No external plan dependencies.
 
 Maintain one hand-editable RON file per concrete market/instrument in Git. Compile all markets and shared dependencies into one rkyv snapshot. Programs load that snapshot at startup into the ordinary market-info repository.
 
-Requirements: **R1** editable sources; **R2** validated binary snapshot; **R3** reusable startup loading; **R4** retire compiled-in storage; **R5** replace snapshot and restart.
+Requirements: **R1** editable sources; **R2** validated binary snapshot and generated CSV instrument index; **R3** reusable startup loading; **R4** retire compiled-in storage; **R5** replace snapshot and restart.
 
 Database storage, hot reload, dynamic updates/subscriptions, Databento streaming and NATS publication are outside scope.
 
@@ -35,6 +35,7 @@ Follow `dev-docs/architecture/layer-definitions.md` and `dev-docs/frameworks/eng
 
 - [ ] Define dedicated archive records, separate from repository indexes, with schema version, source digest and canonical IDs. Pin rkyv format settings and the ID-generation environment.
 - [ ] Resolve references, validate domain properties, reject duplicate identities/ID collisions, and order records deterministically. Reuse existing validation.
+- [ ] Generate Git-tracked `instruments.csv` from the same validated records as the snapshot: `instrument_id,venue,instrument_type,symbol,ron_path`. Use repository-relative RON paths and sort by venue/type/symbol. Treat IDs as text. Check CSV escaping, index/snapshot agreement and stale-index detection; never edit the index manually.
 - [ ] Write a temporary artifact; validate it before atomic replacement. Failure preserves the previous snapshot.
 - [ ] Test reproducibility, supported market variants, canonical-ID preservation, corruption and unsupported versions; use property tests for round-trip preservation.
 

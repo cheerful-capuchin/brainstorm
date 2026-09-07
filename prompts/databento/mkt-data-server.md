@@ -9,7 +9,8 @@ We already have the concept of a [data feed](knowledge-base/docs/references/data
 However, in order to use that data, we need some kind of mapping between the databento properties and our domain properties.
 For now, the only one that we care about is `instrument_id`.
 See instrument: market-info-core/rust/src/entities/instrument.rs.
-The list of the instruments is stored in the mkt info repo: market-info/crates/market-info-repo.
+The list of the instruments should be stored in the mkt info repo: market-info/crates/market-info-repo.
+The data is in market-info/assets/market-info.rkyv.
 
 For the demo purposes, we want the simplest mkt data server.
 Ideally, it should:
@@ -24,7 +25,10 @@ Ideally, it should:
 ### config
 Following the conventions from the dev-docs/frameworks, we'll use the YAML config and load it at startup.
 It should include something like (you're free to improve it)
+
 ```rust
+use std::path::PathBuf;
+
 pub struct MktInfoQuery {
     pub venues: Box<[Venue]>,
     pub instrument_types: Box<[InstrumentType]>,
@@ -33,8 +37,11 @@ pub struct MktInfoQuery {
 pub struct Dataset {
     ///
     /// # How to discover
+    /// https://databento.com/docs/venues-and-datasets
+    ///
     /// ## Check the rust client enum
     /// https://docs.rs/dbn/latest/dbn/publishers/enum.Dataset.html - Databento datasets
+    ///
     ///
     /// ## Query
     /// ```
@@ -50,12 +57,16 @@ pub struct Dataset {
     pub id: Arc<str>,
     pub mkt_info_query: MktInfoQuery,
 }
+
+pub struct MarketInfo {
+    pub location: PathBuf,
+}
 ```
 
 
 ### market info
-I think we'll have a static rkyv-encoded file with the market info, a feed resolver and codec that knows how to decode the data.
-The handler will just put the data into the market info repo. If built properly, when we add the dynamic mkt info, we will just move the handler into a different place
+We'll have an rkyv-encoded file with the market info -> see market-info/crates/market-info-store/src/lib.rs
+at startup we'll just load the data into the market info repo (market-info/crates/market-info-repo/src/repository.rs)
 
 ### databento client
 based on the config, we'll create the client for the necessary dataset.
@@ -64,22 +75,40 @@ Then, we can get Instrument.symbol
 Ideally, we should verify that all the symbols exist
 We'll get the `code=SymbolResolutionFailed` error during subscription https://databento.com/docs/api-reference-live/basics/symbology?historical=rust&live=rust&reference=rust
 
+Then, we need to map databento symbols to databento instrument id
+```
+normal market-data records only carry instrument_id in the header. There is no ticker field on trades, MBO, MBP, OHLCV, etc.
+You get the venue symbol from side channels:
+
+Live: SymbolMappingMsg — header has instrument_id, stype_out_symbol is the raw ticker. Sent at session start and when a mapping changes.
+Definitions: definition records have both instrument_id and raw_symbol on the same message.
+Historical DBN: mappings live in the file metadata, not on each record.
+Historical CSV/JSON: if map_symbols is on (default), Databento adds a symbol column so you do not have to join yourself. That is an export convenience, not how the live protocol looks.
+```
+see https://databento.com/docs/standards-and-conventions/symbology#symbolmappingmsg.
+Based on the SymbolMappingMsg we know the mapping between the raw symbols that we care about and their instrument_id.
+I guess the adapter in data-feed-definitions/rust/crates/codecs/data-feed-codec-dbn-0c63c4bb575d62b5f4552458559baf0d/src/codec.rs has to change
+
+
+### Data processing
+We don't really have to do anything. We can use the data-feed-definitions/rust/crates/codecs/data-feed-codec-dbn-0c63c4bb575d62b5f4552458559baf0d/src/codec.rs.
+Just carry the raw bytes together with the message and publish those raw bytes to the necessary nats subject.
+
+### Data feed
+
+
 ### Out of scope
 Dynamic subscription and market update
 
-## Questions
+## Tasks
 
-### 1. How would you store the market info data?
-I want to have a human-readable one file per market format using [ron](https://github.com/ron-rs/ron)
-and one rkyv-encoded binary file that will be loaded when any program requiring mkt info starts up
-Ideally, then, the concept of StaticMktInfoRepo goes away, and we just have a market info repo.
-Maybe we don't need the files and use some kind of database, idk for now, but ideally, I want to be able to edit the mkt info by hand,
-then update the file and just remount that file to the program
+Following the patterns in dev-docs/framework but without having to build an engine, implement the databento.
+In databento-mkt-data create the rust/crates/databento-mkt-data-server crate.
+You can depend on clap, tokio, databento, and all the necessary crates.
 
+The main logic is very simple -> resolve the instrument id, encode it into the subject, publish to nats
 
 ---
-Read brainstorm/reports/mkt-info/storage.md.
-Implement the readonly market info repo in the market-info/crates/market-info-repo/src/readonly module.
 
 
 

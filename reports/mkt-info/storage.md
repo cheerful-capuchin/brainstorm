@@ -4,6 +4,10 @@ Date: 2026-09-07
 
 Status: proposal. Nothing in this report is implemented.
 
+Scope of this revision: CME futures only. Hyperliquid and Drift keep their
+current code paths and are handled later. Where the archive still has to
+know about them, the report says so.
+
 ## Problem
 
 Every market the platform knows about is Rust source. The Hyperliquid catalog
@@ -31,21 +35,22 @@ redeploy of every consumer. Nobody can look up a market without reading Rust.
 - Removal of `StaticMktInfoRepo`, the `static_mkt_info` and `code_gen`
   features, and the `ctor` based initialization. They stay until the loader
   exists.
+- Hyperliquid and Drift RON files and generator changes.
 
 ## Overview
 
 ```
 market-info/assets/
   markets/<venue>/<instrument_type>/<symbol>.ron   human edited, generator edited
-  assets/<blockchain>/<symbol>.ron                   referenced by markets
-  schedules/<schedule_id>.ron                        referenced by markets
-  markets.csv                                        derived, checked in
-  market-info.rkyv                                   derived, not checked in
+  assets/<kind>/<symbol>.ron                       referenced by markets
+  schedules/<schedule_id>.ron                      referenced by markets
+  markets.csv                                      derived, checked in
+  market-info.rkyv                                 derived, checked in
 
-market-info/crates/mkt-info-gen                      the CLI
+market-info/crates/mkt-info-gen                    the CLI
 
   walk RON tree
-    -> decode per venue file structs
+    -> decode the params struct of each venue and type
     -> resolve asset and schedule references
     -> run domain constructors  (validation, ids)
     -> build MarketInfoFile in memory  (staging)
@@ -60,11 +65,9 @@ market-info/crates/mkt-info-gen                      the CLI
 ```
 assets/markets/cme/future/ESZ6.ron
 assets/markets/cbot/future/ZCZ6.ron
-assets/markets/hyperliquid/perp/BTC.ron
-assets/markets/hyperliquid/spot/@107.ron
-assets/markets/drift/spot/USDC.ron
-assets/assets/solana/USDC.ron
-assets/assets/hyperliquid/HFUN.ron
+assets/markets/nymex/future/CLZ6.ron
+assets/markets/comex/future/GCZ6.ron
+assets/assets/fiat/USD.ron
 assets/schedules/continuous-v1.ron
 assets/schedules/cbot-grains-1900-1320-ct-v1.ron
 ```
@@ -74,31 +77,19 @@ Rules:
 - Directory names are the lower case `Venue` and `InstrumentType` display
   strings. The file stem is the venue symbol. The CLI checks that the path
   agrees with the fields inside the file and refuses a mismatch.
-- A symbol that is not a legal file name is percent encoded. Hyperliquid spot
-  symbols such as `@107` are legal on every file system we use, so no encoding
-  is needed today.
+- A symbol that is not a legal file name is percent encoded. CME symbols are
+  plain ASCII, so no encoding applies today.
 - A file is never deleted when a venue delists a market. `listing_status`
   changes to `Delisted`. Historical data references the id.
 - One market per file. One asset per file. One schedule per file.
 
-### File structs
+### What a market file stores
 
-The RON files do not store the `MarketInfo` enum. Each venue and instrument
-type has one file struct. The struct holds exactly the fields a human or a
-generator decides, and nothing derived. The CLI turns file structs into domain
-types through the existing constructors.
-
-The file structs live in a new module `market_info::source` so that the CLI,
-the generators, and tests share one definition. They derive `serde` only. They
-do not derive rkyv.
-
-No file struct stores `instrument_id`, `contract_id`, or `asset_id`. Those are
-computed.
-
-`CmeFutureSource` maps one to one onto `CmeFutureMarketInfoParams`:
+A market file stores the existing params struct of its venue and type. For
+CME futures that is `CmeFutureMarketInfoParams`. No new struct is added.
 
 ```ron
-CmeFutureSource(
+CmeFutureMarketInfoParams(
     symbol: "ESZ6",
     venue: Cme,
     display_name: "E-mini S&P 500 Dec 2026",
@@ -115,45 +106,65 @@ CmeFutureSource(
 )
 ```
 
-`HlPerpSource` holds the inputs of `HlPerpMarketInfo::new` plus
-`min_notional`. `underlying` is either `Asset("hyperliquid/PEPE")` or
-`Ticker("PAXG")`. `settlement_asset` and `funding_asset` are asset references.
+The file does not store `CmeFutureMarketInfo` itself, for three reasons:
 
-`HlSpotSource` holds the inputs of `HlSpotMarketInfo::new`. `base_asset` and
-`quote_asset` are asset references.
+- It holds computed data. `instrument` carries the instrument id, and
+  `settlement_asset` is always the USD fiat asset. Storing them invites a
+  file that disagrees with its own inputs.
+- Decoding it would bypass `try_new`. The params struct is the input of the
+  constructor, so every file goes through validation when it is built.
+- Its fields are private, which is right for the domain type and wrong for
+  a file a human edits.
 
-`DriftSpotSource` holds `DriftSpotMarketConfig` minus the `Instrument`, which
-is rebuilt from `symbol` and the venue implied by the path.
+The params struct gains `Serialize`, `Deserialize`, and `PartialEq`. Its
+field types need serde derives where they are missing today:
 
-`AssetSource` is either `Crypto { symbol, name, blockchain, asset_type, decimals }`
-or `Fiat { symbol, name, fiat }`.
+- `QuoteUnit` in market-info-core. It is `#[non_exhaustive]` and has no
+  serde derive.
+- `ListingStatus` and `FutureSettlementMethod` in market-info.
+- `Venue`, `TradingScheduleId`, `NanoTimestamp`, `Decimal`, and `Price`
+  already derive serde.
 
-`ScheduleSource` is `TradingScheduleRecord` from `trading_schedule.rs`, which
-already derives serde. The CME schedule JSON catalog converts to this tree
-once.
+No file stores `instrument_id` or `contract_id`. Those are computed.
+
+### Assets and schedules
+
+`assets/assets/fiat/USD.ron` stores the fiat `Asset` value. For CME it is
+the only asset. The tree exists now so that the archive's asset table has a
+source and so that the layout does not change when spot venues arrive.
+
+`assets/schedules/<id>.ron` stores a `TradingScheduleRecord`, which already
+derives serde. The CME schedule JSON catalog in
+`crates/cme-market-info-gen/assets` converts to this tree once and is then
+retired.
 
 ### References between files
 
-A market refers to an asset by the path relative to `assets/assets` without
-the extension, for example `"solana/USDC"`. A market refers to a schedule by
-`TradingScheduleId`, which is the file stem. The CLI resolves every reference
-and fails with the referencing file path and the missing key when one does
-not resolve.
+A market refers to a schedule by `TradingScheduleId`, which is the file
+stem. A market that needs an asset refers to it by the path relative to
+`assets/assets` without the extension, for example `"fiat/USD"`. CME futures
+do not reference an asset in the file. The constructor picks USD.
+
+The CLI resolves every reference and fails with the referencing file path
+and the missing key when one does not resolve.
 
 Numeric types `Price`, `Qty`, and `Decimal` are written as decimal strings.
-Timestamps are written as integer nanoseconds. Both already round trip through
-serde.
+Timestamps are written as integer nanoseconds. Both already round trip
+through serde.
 
 ### Field ownership
 
 Generators rewrite files, and humans edit files by hand. Without a rule, the
-next generator run reverts the hand edit. Each file struct documents which
-fields a generator owns. The generator reads the file, replaces only its own
-fields, and writes the file back. Fields it does not own are left as read.
+next generator run reverts the hand edit. The params struct documents which
+fields the generator owns. The generator reads the file, replaces only its
+own fields, and writes the file back. Fields it does not own are left as
+read.
 
-For Hyperliquid, the existing `overrides.toml` stays the place for human
-choices that the venue feed cannot supply, such as `underlying_symbol` and
-`display_name` for scaled perps.
+For CME, the generator owns everything that comes from the secdef and FPRF
+inputs. `display_name` and `trading_schedule_id` come from the reviewed
+policy in `policy.rs` and the schedule catalog, so the generator owns them
+too. A human edit to a CME file is therefore expected to be rare and to be a
+correction that the next generator run confirms or reverts.
 
 The RON pretty printer configuration is fixed in one place and used by every
 writer, so a generator run that changes one field produces a one line diff.
@@ -161,17 +172,34 @@ writer, so a generator run that changes one field produces a one line diff.
 ## The identity ledger: markets.csv
 
 `assets/markets.csv` is derived by the CLI and checked in. It is the only
-place where an instrument id is written in a human readable form.
+place where an instrument id is written in a human readable form. It is
+written as aligned columns so that a person can read it without a tool.
 
 ```
-instrument_id,contract_id,venue,instrument_type,symbol,listing_status,filepath
-inst_1531185364826081794,,drift,spot,USDC,active,markets/drift/spot/USDC.ron
+instrument_id             , contract_id               , venue , type   , symbol , status   , display_name                , filepath
+inst_1531185364826081794  , cont_1531185364826081794  , cme   , future , ESZ6   , active   , E-mini S&P 500 Dec 2026     , markets/cme/future/ESZ6.ron
+inst_2213984410023199001  , cont_2213984410023199001  , cbot  , future , ZCZ6   , active   , Corn Dec 2026               , markets/cbot/future/ZCZ6.ron
 ```
 
-Sorted by `instrument_id`. `contract_id` is empty for spot.
+Format rules:
 
-The CLI compares the ledger it just built with the checked in one and refuses
-to write when:
+- The separator is `, `. Every value is padded with spaces on the right to
+  the width of its column. Readers parse with whitespace trimming, which the
+  `csv` crate supports with `Trim::All`.
+- Each column has a fixed minimum width. Ids are fixed length, and the
+  minimum widths for venue, type, symbol, and status cover every value we
+  have. Only `display_name` and `filepath` can grow. This keeps a one market
+  change to a one line diff in most cases. When a longer value appears, the
+  column reflows and the diff is wider once.
+- A value that contains a comma or a double quote is quoted the CSV way.
+  Display names can contain commas.
+- Rows are sorted by `instrument_id`. `contract_id` is empty for spot.
+
+`display_name` is in the file because it helps a human find a row. It is
+presentation data in an identity file, and that is accepted.
+
+The CLI compares the ledger it just built with the checked in one and
+refuses to write when:
 
 - a row from the old ledger is missing in the new one;
 - a row keeps its `filepath` but changes `instrument_id`;
@@ -238,20 +266,23 @@ pub struct MarketInfoFile {
 }
 ```
 
+`markets` holds `MarketInfo`, not `FutureMarketInfo`, so that the file does
+not change shape when spot and perp venues move to this path. For CME only,
+every element is `MarketInfo::Future`.
+
 `assets` is needed even though every market embeds its assets. The asset
-repository serves assets that no market references, for example `WSOL`.
-Assets duplicated inside markets are a few hundred kilobytes at the current
-collection size and are not worth normalizing.
+repository serves assets that no market references. Assets duplicated inside
+markets are a few hundred kilobytes at the current collection size and are
+not worth normalizing.
 
 ### The schema hash
 
 rkyv has no reflection, so the schema hash is a fixture hash.
 
-`market_info::source::schema_fixture()` returns one `MarketInfoFile` value
-with every variant of every enum present and a distinct value in every
-field. Both the CLI and the loader serialize the fixture with rkyv and hash
-the bytes with blake3. The first eight bytes of the digest are the
-`schema_hash`.
+`market_info::schema_fixture()` returns one `MarketInfoFile` value with every
+variant of every enum present and a distinct value in every field. Both the
+CLI and the loader serialize the fixture with rkyv and hash the bytes with
+blake3. The first eight bytes of the digest are the `schema_hash`.
 
 Any change in field order, field type, enum variant order, `Arc<str>` versus
 `String`, or the rkyv version changes the bytes and so the hash. A renamed
@@ -275,58 +306,63 @@ later if this turns out to matter.
 
 ## Domain type changes required
 
-These changes are prerequisites. They are in other repositories.
+These changes are prerequisites. Most are in other repositories.
 
-market-info:
+For the RON files, in market-info and market-info-core:
 
-- `HlSpotMarketInfo.display_name` and `HlPerpMarketInfo.display_name` change
-  from `&'static str` to `Arc<str>`. rkyv cannot archive a borrowed str.
-- `MarketInfo`, `SpotMarketInfo`, `PerpMarketInfo`, `FutureMarketInfo`, the
-  Drift, Hyperliquid, and CME structs, `Underlying`, `ListingStatus`,
-  `FutureSettlementMethod`, `TradingScheduleId`, and the schedule types derive
-  `rkyv::Archive`, `rkyv::Serialize`, `rkyv::Deserialize`. Fields of type
-  `Decimal`, `Price`, `Qty` get `#[rkyv(with = RkyvDecimal)]`.
-- rkyv becomes a required dependency, not a feature.
-- `CryptoAsset::new` takes `&'static str`. `CryptoAsset::from_arc` already
-  exists and is what the CLI uses.
+- `CmeFutureMarketInfoParams` derives `Serialize`, `Deserialize`,
+  `PartialEq`.
+- `ListingStatus` and `FutureSettlementMethod` derive serde.
+- `QuoteUnit` derives serde.
 
-market-info-core:
+For the archive, the `MarketInfo` enum and everything it contains must derive
+rkyv. The enum still has the Hyperliquid and Drift variants, so those types
+need the derive too even though no RON file is produced for them now:
 
-- `Instrument`, `InstrumentId`, `InstrumentType`, `Venue` and its unit
-  structs, `Asset`, `CryptoAsset`, `FiatAsset`, `AssetId`, `CryptoAssetType`,
-  `Blockchain`, `Fiat`, `QuoteUnit`, `ContractId` derive rkyv. Private
-  fields are fine because the derive is in the defining crate.
-- `numerics` is enabled with the `rkyv` feature.
-
-utils (`time`):
-
-- `NanoTimestamp` derives rkyv.
+- market-info: `MarketInfo`, `SpotMarketInfo`, `PerpMarketInfo`,
+  `FutureMarketInfo`, the CME, Hyperliquid, and Drift structs, `Underlying`,
+  `ListingStatus`, `FutureSettlementMethod`, `TradingScheduleId`, and the
+  schedule types derive `rkyv::Archive`, `rkyv::Serialize`,
+  `rkyv::Deserialize`. Fields of type `Decimal`, `Price`, `Qty` get
+  `#[rkyv(with = RkyvDecimal)]`.
+- market-info: `HlSpotMarketInfo.display_name` and
+  `HlPerpMarketInfo.display_name` change from `&'static str` to `Arc<str>`.
+  rkyv cannot archive a borrowed str, and the derive on `MarketInfo` fails
+  without this. It is the one Hyperliquid change that cannot wait.
+- market-info: rkyv becomes a required dependency, not a feature.
+- market-info-core: `Instrument`, `InstrumentId`, `InstrumentType`, `Venue`
+  and its unit structs, `Asset`, `CryptoAsset`, `FiatAsset`, `AssetId`,
+  `CryptoAssetType`, `Blockchain`, `Fiat`, `QuoteUnit`, `ContractId` derive
+  rkyv. Private fields are fine because the derive is in the defining crate.
+  `numerics` is enabled with the `rkyv` feature.
+- utils `time`: `NanoTimestamp` derives rkyv.
 
 ## The CLI: mkt-info-gen
 
 Location: `market-info/crates/mkt-info-gen`. Binary name `mkt-info-gen`.
 
 ```
-mkt-info-gen build  --assets market-info/assets --out market-info/assets [--allow-id-change]
-mkt-info-gen check  --assets market-info/assets
-mkt-info-gen inspect --file market-info.rkyv [--instrument inst_...]
+mkt-info-gen build   --assets market-info/assets [--allow-id-change]
+mkt-info-gen check   --assets market-info/assets
+mkt-info-gen inspect --file market-info/assets/market-info.rkyv [--instrument inst_...]
 ```
 
-`build` runs the pipeline and writes `markets.csv` and `market-info.rkyv`.
-`check` runs the same pipeline and exits non zero when the ledger would
-change or any validation fails. It is the CI command. `inspect` prints the
-header, the schema hash, the counts, and optionally one market as RON, so an
-operator can look inside a file pulled from the bucket.
+`build` runs the pipeline and writes `markets.csv` and `market-info.rkyv`
+next to the tree. `check` runs the same pipeline and exits non zero when
+either output would change or any validation fails. It is the CI command.
+`inspect` prints the header, the schema hash, the counts, and optionally one
+market as RON, so an operator can look inside a file pulled from the bucket.
 
 Pipeline, each step fails with the file path and the reason:
 
-1. Walk `assets/assets`, decode every `AssetSource`, build `Asset` values,
-   index by reference key. Fail on duplicate `asset_id`.
-2. Walk `assets/schedules`, decode every `ScheduleSource`. Fail on duplicate
-   id or on a file stem that differs from the id inside.
-3. Walk `assets/markets`, decode every file into the file struct chosen by
+1. Walk `assets/assets`, decode every asset, index by reference key. Fail on
+   duplicate `asset_id`.
+2. Walk `assets/schedules`, decode every `TradingScheduleRecord`. Fail on
+   duplicate id or on a file stem that differs from the id inside.
+3. Walk `assets/markets`, decode every file into the params struct chosen by
    the directory pair. Fail on a path and content mismatch.
-4. Resolve asset and schedule references.
+4. Resolve schedule references, and asset references where a venue has
+   them.
 5. Run the domain constructor for each market. `try_new` errors are reported
    with the file path.
 6. Collect into `MarketInfoFile`. Sort. Fail on duplicate `instrument_id` or
@@ -346,21 +382,21 @@ recursion in the tree walk.
 
 ## Generator workflow
 
-`cme-market-info-gen` and `hl-market-list-gen` stop emitting Rust or JSON
-catalogs. Each one:
+`cme-market-info-gen` stops emitting the JSON catalog. It:
 
-1. Reads its venue inputs as it does today.
-2. For each market it knows about, reads the existing RON file if present,
-   decodes it into the file struct, replaces the fields it owns, and writes
+1. Reads secdef and the FPRF files as it does today.
+2. For each contract, reads the existing RON file if present, decodes it
+   into `CmeFutureMarketInfoParams`, replaces the fields it owns, and writes
    the file back with the shared pretty printer. If the file is absent, it
    writes a new one.
-3. For each existing file under its venue that the input no longer mentions,
-   sets `listing_status` to `Delisted`. It never deletes.
-4. Does not touch `markets.csv` or the rkyv file. The user runs
+3. For each existing file under the four CME venues that the input no
+   longer mentions, sets `listing_status` to `Delisted`. It never deletes.
+4. Keeps its `--check` mode, now defined as "no RON file would change".
+5. Does not touch `markets.csv` or the rkyv file. The user runs
    `mkt-info-gen build` after.
 
-The generators depend on `market_info::source` and the shared pretty printer
-and on nothing else new.
+The generator depends on the params struct and the shared pretty printer and
+on nothing else new.
 
 ## Bucket and runtime
 
@@ -374,25 +410,39 @@ report.
 
 ## Tests
 
-- Round trip: every file struct serializes to RON and back unchanged. Table
-  test over one example per struct.
-- Schema fixture: serialize the fixture, compare the hash with a checked in
-  constant. When a domain type changes on purpose, the test tells the author
-  to bump the constant. This is the test that proves the hash tracks layout.
-- Full build: `mkt-info-gen check` over the real tree in CI.
-- Load: decode the rkyv file produced from the real tree and compare every
-  market with the one built directly from the RON tree. This is the test that
-  proves "we can load the dataset".
-- Ledger guard: property test that a random id change or row removal is
-  refused without the flag.
+Property tests are the main tool. The workspace already uses proptest
+`1.11.0` in market-info-repo.
+
+- RON round trip. A proptest strategy produces arbitrary
+  `CmeFutureMarketInfoParams` values, including every `QuoteUnit` variant,
+  both settlement methods, and every listing status. Serialize with the
+  shared pretty printer, parse, assert equality. The same for
+  `TradingScheduleRecord` and `Asset`. This proves the params struct and its
+  field types survive the file format.
+- Constructor agreement. For arbitrary params, `try_new` on the parsed value
+  returns the same result as `try_new` on the original, both the `Ok` and
+  every `Err` variant. This proves the file cannot change what the
+  constructor decides.
+- Ledger round trip. Arbitrary ledgers, including display names with commas
+  and quotes, write to the aligned format and parse back unchanged.
+- Ledger guard. Arbitrary old and new ledgers with a random id change or a
+  random row removal are refused without the flag and accepted with it.
+- Archive round trip. Arbitrary `MarketInfoFile` values serialize with rkyv,
+  pass bytecheck, and deserialize equal.
+- Schema fixture. Serialize the fixture, compare the hash with a checked in
+  constant. When a domain type changes on purpose, the failure tells the
+  author to bump the constant. This is the test that proves the hash tracks
+  layout.
+- Full build. `mkt-info-gen check` over the real tree in CI.
+- Load. Decode the checked in `market-info.rkyv` and compare every market
+  with the one built directly from the RON tree. This is the test that
+  proves the dataset loads.
 
 ## Open questions
 
-- Should the CSV also carry `display_name`? It helps humans and costs
-  nothing, but it is presentation data in an identity file.
-- Hyperliquid spot symbols such as `@107` are file stems today. If a venue
-  ever uses `/` in a symbol, percent encoding starts to apply. Decide the
-  encoding now or when it happens.
+- CME symbols are plain ASCII. If a later venue uses `/` or another reserved
+  character in a symbol, percent encoding of file stems starts to apply.
+  Decide the encoding then, or now.
 - Whether `source_revision` should be the market-info git sha or a content
   hash of the RON tree. The content hash works without git at build time.
 
@@ -401,6 +451,13 @@ report.
 - No intermediate storage struct between the RON tree and the archive. The
   archive holds the domain types. A layout mismatch is rejected by the schema
   hash and fixed by a re-upload.
+- The RON files store the existing params struct of each venue and type, not
+  the market info type and not a new source struct.
 - The schema hash is a fixture hash, not a hand maintained version number.
-- Ids are never stored in RON. `markets.csv` is the ledger and the guard.
+- Ids are never stored in RON. `markets.csv` is the ledger and the guard. It
+  is column aligned and carries `display_name`.
 - Assets and schedules are separate file trees referenced by key.
+- `market-info.rkyv` is checked in next to the tree.
+- Hyperliquid and Drift are deferred. Only the rkyv derives and the
+  `Arc<str>` display name change touch them, because the `MarketInfo` enum
+  contains their types.

@@ -27,3 +27,11 @@ Do you create a file per index kind in market-info/crates/market-info-repo/src/r
 ## Requirements
 - I want you to have at most 300-500 lines per file (except the tests and docs).
 - All the prose must be simple technical English
+
+
+---
+
+client/crates/client-core/src/wasm.rs  uses the old use market_info_repo::MarketInfoRepository
+
+I wrote a new one in market-info/crates/market-info-repo/src/repository.rs
+What do we need to replace the old with the new one?

@@ -178,9 +178,9 @@ place where an instrument id is written in a human readable form. It is
 written as aligned columns so that a person can read it without a tool.
 
 ```
-instrument_id             , contract_id               , venue , type   , symbol , status   , display_name                , filepath
-inst_1531185364826081794  , cont_1531185364826081794  , cme   , future , ESZ6   , active   , E-mini S&P 500 Dec 2026     , markets/cme/future/ESZ6.ron
-inst_2213984410023199001  , cont_2213984410023199001  , cbot  , future , ZCZ6   , active   , Corn Dec 2026               , markets/cbot/future/ZCZ6.ron
+instrument_id           , instrument_id_u64   , contract_id             , contract_id_u64     , venue , type  , symbol  , status  , display_name          , filepath
+inst_0143FK9S4J45C      , 40655105779372204   , cntr_0143FK9S4J45C      , 40655105779372204   , cbot  , future, ZCN2027 , active  , ZCN2027 CORN FUTURES  , markets/cbot/future/ZCN2027.ron
+inst_06Q383CN8R1RM      , 242182945858389780  , cntr_06Q383CN8R1RM      , 242182945858389780  , cbot  , future, ZMV2026 , active  , ZMV2026 SOYBEAN MEAL  , markets/cbot/future/ZMV2026.ron
 ```
 
 Format rules:
@@ -470,8 +470,12 @@ Where the code differs from the design above, and why.
   build. `mkt-info-gen` does the file walk, the atomic writes, and the exit
   codes: 1 failure, 2 usage, 3 guard refused, 4 stale output in `check`.
 - The RON codec uses ron 0.12.2 with newtypes unwrapped, so `Price` and
-  `Decimal` fields render as plain decimal strings. `venue` renders as serde
-  gives it for a newtype variant of a unit struct.
+  `Decimal` fields render as plain decimal strings. The extension is a
+  default of the codec's `Options` on both sides, so files carry no
+  `#![enable(...)]` header, and a file that has one still parses. `venue`
+  renders as serde gives it for a newtype variant of a unit struct.
+- The ledger carries each id twice: the base32 display form and the plain
+  `u64`. The parser refuses a row where the two disagree.
 - The ledger's last column is not padded, so lines carry no trailing
   whitespace. The parser trims, so padded input is accepted too.
 - `schema_hash()` and `schema_fixture()` return `Result`, because the fixture

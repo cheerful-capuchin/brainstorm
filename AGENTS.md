@@ -14,7 +14,7 @@ This repository uses Jujutsu (`jj`) for local history and Git interoperability.
 ## Session records
 
 Record the decisions the user makes during a conversation in a session record
-under `progress/`. These records are written for agents, not for the user, so
+under `sessions/`. These records are written for agents, not for the user, so
 that decisions stay durable and traceable across conversations.
 
 - Create the record with `just session --slug "<kebab-case>" --title "<title>"`.
@@ -26,5 +26,5 @@ that decisions stay durable and traceable across conversations.
   the user gave, and the alternatives they rejected, in their own terms.
 - Keep adding to the same record for the rest of the conversation instead of
   creating a new one per decision.
-- Before starting related work, search `progress/` for earlier sessions and link
+- Before starting related work, search `sessions/` for earlier sessions and link
   them through `related_sessions`.

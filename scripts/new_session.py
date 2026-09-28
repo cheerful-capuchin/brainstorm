@@ -96,6 +96,7 @@ def create_session(
     if collisions:
         raise FileExistsError(f"{identifier} is already in use; retry in a second")
 
+    directory.mkdir(exist_ok=True)
     session_path = directory / f"{identifier}-{slug}.md"
     with session_path.open("x") as session_file:
         session_file.write(render_session(identifier, title, when, related))
@@ -103,7 +104,7 @@ def create_session(
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Create a session record in progress/.")
+    parser = argparse.ArgumentParser(description="Create a session record in sessions/.")
     parser.add_argument("--slug", required=True, help="Kebab-case file name suffix")
     parser.add_argument("--title", required=True, help="Human-readable session title")
     parser.add_argument(
@@ -120,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         session_path = create_session(
-            repository / "progress",
+            repository / "sessions",
             validate_slug(args.slug),
             normalize_title(args.title),
             parse_related(args.related),

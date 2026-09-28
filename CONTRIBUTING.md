@@ -113,6 +113,19 @@ jj bookmark set main -r @-
 jj git push --bookmark main
 ```
 
+Unlike Git branches, `jj` bookmarks do not move forward when you checkpoint.
+`main` stays on the last pushed commit until you move it, so skipping the
+`jj bookmark set` step makes the push a no-op:
+
+```
+Warning: No bookmarks/tags found in the default push revset: remote_bookmarks(remote=origin)..@
+Nothing changed.
+```
+
+Right after `jj checkpoint`, `@-` is the checkpoint you just created and `@` is
+the new empty change, so `-r @-` is the usual target. If the working copy holds
+content you have not checkpointed yet, run `jj checkpoint -m "..."` first.
+
 Only checkpoint commits reachable from the pushed bookmark are durable on the
 remote. Local evolution and operation history does not travel with a normal Git
 push.

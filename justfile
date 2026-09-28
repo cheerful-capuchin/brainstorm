@@ -8,6 +8,10 @@ set default-list := true
 session slug title related="":
     @python3 scripts/new_session.py --slug {{quote(slug)}} --title {{quote(title)}} --related {{quote(related)}}
 
+# List every session record, newest first: ID, date, title, summary, related.
+sessions:
+    @python3 scripts/list_sessions.py
+
 sync message="sync":
     jj describe -m "{{message}}"
     jj bookmark set main -r @

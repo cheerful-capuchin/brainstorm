@@ -79,7 +79,10 @@ def render_session(identifier: str, title: str, moment: datetime, related: list[
         related_block = "related_sessions:\n" + "".join(f"  - {item}\n" for item in related)
     else:
         related_block = "related_sessions: []\n"
-    return f"---\ncreate_time: {create_time}\n{related_block}---\n\n# {identifier}: {title}\n"
+    return (
+        f"---\ncreate_time: {create_time}\nsummary: \"\"\n{related_block}---\n\n"
+        f"# {identifier}: {title}\n"
+    )
 
 
 def create_session(

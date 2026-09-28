@@ -26,5 +26,9 @@ that decisions stay durable and traceable across conversations.
   the user gave, and the alternatives they rejected, in their own terms.
 - Keep adding to the same record for the rest of the conversation instead of
   creating a new one per decision.
-- Before starting related work, search `sessions/` for earlier sessions and link
-  them through `related_sessions`.
+- Fill in the one-line `summary` field right after creating the record and
+  rewrite it as decisions are added; it is what `just sessions` shows.
+- Before starting related work, run `just sessions` to list every record with
+  its summary, open the relevant ones, and link them through
+  `related_sessions`. Use `rg` in `sessions/` for exact terms.
+- The `decision-log` skill has the full instructions.

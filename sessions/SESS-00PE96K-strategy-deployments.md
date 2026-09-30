@@ -1,6 +1,6 @@
 ---
 create_time: 2026-09-30T10:00:51Z
-summary: "ISS-0AGTK design: real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
+summary: "ISS-0AGTK design: StrategyDeploymentID is a snowflake, not a hash (no dedup of identical deployments); real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
 related_sessions: []
 ---
 
@@ -62,3 +62,32 @@ starts at first start).
 - Is a strategy-wide "stop all" kept as a bulk operation?
 - What happens to `strategies_trading_accounts_connections` rows for
   strategies with no active deployment (migration)?
+
+## Decisions
+
+### D1. Strategy deployment id is a snowflake, not a hash (2026-09-30)
+
+The user does not want a content-addressed (hash) id for `StrategyDeployment`.
+The application server allocates a snowflake id before provisioning, the same
+way strategies and strategy revisions are allocated.
+
+**Why (user's words):** a hash "introduces additional complexity without much
+gain. Yeah, we could have deduplication, but if the user intends to create a
+deployment, there is a reason for that."
+
+**Consequences:**
+- No "deployment of this revision already exists" check on create. Two
+  deployments of one strategy revision with identical bindings and accounts are
+  allowed; the second one is the user's intent.
+- `computeDeploymentID` in id-wasm (`domain/crates/id/src/lib.rs`, hash of
+  strategy id + revision id) and the client's temporary FNV hash of
+  `strategyId\0revisionId` (`stxr-client-app/.../stxrDeploymentIdProvider.ts`)
+  are retired; the client's `deployment_already_exists` conflict goes away.
+- The 128-bit hash `StrategyDeploymentID` (sha256 of the Cloud Run service
+  name) is deleted; `NewStrategyDeploymentId` (u64, prefix `strt_depl`) is
+  renamed to `StrategyDeploymentId`.
+- Any duplicate protection that is still wanted (accidental double submit)
+  belongs to the request layer (idempotency key), not to the identity.
+- Affects: strategy-core (rust + ts ids, generated code), domain id wasm crate,
+  structure-web api (strategies-service start path, deployments service and
+  repository, app-db schema), stxr-client-app id provider.

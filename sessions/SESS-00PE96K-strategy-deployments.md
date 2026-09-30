@@ -335,3 +335,21 @@ the StrategyStop re-entry), stop_deployments, list/get/list_revisions/
 get_revision, delete. There is no `update` action: deployment inputs are
 immutable. Existing nodes cite structure-web `path:line`; planned nodes are
 marked `(new)`.
+
+### D13. Three corrections to DEC-0BZBC (2026-09-30)
+
+- `StrategyDeployment::Status_isStartable` is renamed to
+  `StrategyDeployment::verifyStart` (Result-returning business rule, like
+  `Backtest.verifyBacktestArgs`); `verifyDelete` added for symmetry (agent's
+  extension, not explicitly requested).
+- The internal status callback is a resource-shaped custom verb, not a flat
+  route: `POST /api/v0/strategies/{s}/revisions/{r}/deployments/{d}/revisions/{dr}:commit_status`,
+  operation `strategy_deployments.commit_revision_status`, ids in the path,
+  body `CommitStrategyDeploymentRevisionStatusBody` (service_name,
+  service_generation, status, error). User's words: "this should change to
+  follow the same path as the POST .../deployments/{d}:start".
+- `StrategiesService::checkNativeStart` clarified: it is the existing wrapper
+  around `NativeRevisions.checkStart` (DSL 2 core validates bindings against
+  the revision's declarations) plus `validateMarketReferences` (instruments and
+  assets must be known to the application server); shared with backtests, so
+  it moves out of StrategiesService to a shared module when `start` is deleted.

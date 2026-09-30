@@ -48,8 +48,8 @@ starts at first start).
 - Old infra entity folded into `StrategyDeploymentRevision`; hash
   `StrategyDeploymentID` dropped; `NewStrategyDeploymentID` renamed to
   `StrategyDeploymentID`; old `strategy_deployments` rows not backfilled.
-- Wildcard via `-` path segment (AIP-159) mapped to an explicit scope union in
-  the repository, instead of nil ids.
+- Wildcard via `*` path segment (user chose `*` over AIP-159's `-`, D10) mapped
+  to an explicit scope union in the repository, instead of nil ids.
 - Cloud Run worker-pool id derived from the deployment revision id.
 
 ## Open questions (deferred to the user)
@@ -305,3 +305,22 @@ workflows, no dual-publishing of revision-status events. The migration drops
 `strategy_deployment_revisions` and
 `strategy_deployments_trading_accounts_connections`. Existing deployed
 strategies must be stopped (or the Cloud Run resources deleted) before cutover.
+
+### D10. Wildcard path segment is `*`, not `-` (2026-09-30)
+
+List paths use `*` for the wildcard parent segment:
+`GET /api/v0/strategies/*/revisions/*/deployments` and
+`GET /api/v0/strategies/{s}/revisions/*/deployments`. `strategies/*/revisions/{r}`
+is still rejected (revision ids are only unique within a strategy).
+
+**Why:** user preference over the AIP-159 `-` convention. Note for
+implementers: `*` must be URL-encoded as `%2A` by clients that percent-encode
+path segments; Hono route params accept it either way.
+
+### D11. Decision record in the knowledge base (2026-09-30)
+
+The user asked for a DEC record covering the `StrategyDeployment` and
+`StrategyDeploymentRevision` entities and the RPC contracts, written as
+TypeScript contracts with JSDoc that explains what each property is (when not
+obvious) and why it exists. The platform runtime revision / release work is
+excluded from that record for now.

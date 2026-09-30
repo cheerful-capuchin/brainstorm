@@ -1,6 +1,6 @@
 ---
 create_time: 2026-09-30T10:00:51Z
-summary: "ISS-0AGTK design recorded as DEC-0BZBC (proposed): deployments mutable (display_name, description, latest revision pointer), revisions immutable and carry accounts + bindings + policies, :start may override them; StrategyDeploymentRevision name; account exclusive to one active deployment (paper too); keep strategy-wide stop; no data migration, drop old tables; environments out of scope; StrategyDeploymentID is a snowflake, not a hash; create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline that runs as an activity-worker workflow behind an internal endpoint with a system actor; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
+summary: "ISS-0AGTK design recorded as DEC-0BZBC (proposed): deployments mutable (display_name, description, latest revision pointer), revisions immutable and carry accounts + bindings, :execute (renamed from :start, future rollout) may override them; mode + error/logging policy fixed on the deployment; first_ready_time dropped; StrategyDeploymentRevision name; account exclusive to one active deployment (paper too); keep strategy-wide stop; no data migration, drop old tables; environments out of scope; StrategyDeploymentID is a snowflake, not a hash; create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline that runs as an activity-worker workflow behind an internal endpoint with a system actor; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
 related_sessions: []
 ---
 
@@ -403,6 +403,34 @@ Applied in DEC-0BZBC:
 - Exclusivity (D7) now reads "one non-terminal deployment revision per
   account"; carrying an account forward on restart is not a conflict.
 
-Open: may `mode` change between revisions of one deployment (paper -> live
-accounts on restart)? Currently allowed by the rules as written; the
-deployment projects the latest revision's mode.
+Resolved by D16: mode never changes.
+
+### D16. Mode and policies are fixed on the deployment; `start` becomes `execute`; `first_ready_time` dropped (2026-09-30)
+
+- **Mode never changes** (user: "if the deployment used to be paper, it
+  should always remain paper, otherwise all the stats are fucked"). `mode`
+  lives on `StrategyDeployment`, derived from the first revision's accounts
+  at create; every later revision's accounts must match it
+  (`ACCOUNT_MODE_MISMATCH`). Removed from the revision.
+- **Arguments stay on the deployment** (user: "I don't think you can change
+  the arguments. So, I'd keep 'em on the deployment entity"). Interpreted as
+  `error_policy` and `logging_policy`: they move to `StrategyDeployment`,
+  fixed at create, not overridable on execute. `strategy_variable_bindings`
+  stay on the revision (changeable per D15); the resolved
+  `strategy_spec_arguments` stay on the revision because they depend on the
+  bindings. If "arguments" meant something else, this needs correcting.
+- **Superseded** stop reason for a re-configured never-launched Pending
+  revision: confirmed by the user ("superseeded is fine").
+- **`:start` renamed to `:execute`** (`strategy_deployments.execute`,
+  `ExecuteStrategyDeploymentBody`, `verifyExecute`, `DEPLOYMENT_NOT_EXECUTABLE`,
+  `StrategyDeploymentsService::execute`). User's reason: in the future a new
+  revision will be created and rolled out without requiring the user to stop
+  the previous revision first. `start_policy` on create keeps the backtest
+  name (D2). The `Starting` status and the `StrategyStart` workflow keep their
+  names.
+- **`first_ready_time` dropped** from the deployment (user: "wtf is this?").
+  It was the earliest `ready_time` over the revisions, mirroring the client's
+  `firstStartedAt` (client DEC-0BRB6: performance life starts at the first
+  start). It is derivable from `strategy_deployment_revisions.list`; noted
+  in the revisit triggers as a possible projection if the performance query
+  needs it.

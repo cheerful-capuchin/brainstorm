@@ -24,6 +24,11 @@ We're using GCP in infra/infra. How do you send emails? Does Google have an API/
 ### Whitelist
 We should remove the whilelist from the YAML config and instead have it be maintained in the database and add some endpoints to do that.
 
-
 ### Internal Access
+How do we manage the internal access to modify the whitelist? Ideally, with audit logs.
+The lazy option is to have the api key and use that. However, it's a very unstable solution.
+
+How would you manage the permissions within the structure platform and have a set of accounts that are allowed to modify it?
+I was thinking of introducing the hierarchy like Organization and then have users have memberships in the organizations.
+We could reserve the structure org id and use that id as the org that has full access to the platform and can modify the whilelists, settings, start jobs, etc
 

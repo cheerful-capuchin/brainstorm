@@ -1,3 +1,76 @@
+I want you to spawn workflows to implement the strategy deployments.
+You can orchestrate the worklfows how you see fit. The key is that the tasks are completed
+
+## workflow one:
+You are implementing PLAN-0BZET "Strategy Deployment Entities, Application Server".
+
+Workspace: /Users/doichevkostia/work/stxr/workspace (git submodules; each repo has a justfile).
+Plan: knowledge-base/docs/execution-plans/records/PLAN-0BZET-strategy-deployment-entities-application-server.md
+Decision it implements: knowledge-base/docs/decisions/records/DEC-0BZBC-strategy-deployment-and-deployment-revision-entities.md
+Decision history (why things are the way they are): brainstorm/sessions/SESS-00PE96K-strategy-deployments.md
+
+Read, in this order, before touching code: the plan (all of it), the decision (all of it, especially Domain entities, Lifecycle, Database schema, RPC contracts, Call topology, Requirement index), then the standards the plan's "Agent Instructions" list. Follow the plan's tasks T1..T9 in order; T1 is in strategy-core and domain, the rest in entity-core and structure-web.
+
+Rules:
+- The decision is the contract. If a task needs behaviour the decision does not define, stop, append the question to the decision's "Revisit Trigger" section, and tell me. Do not invent it.
+- Delete the old model; no compatibility shims, no deprecated aliases (BZBC-11).
+- Every task ends with the repo's `just check` green for the packages touched and the task's proof tests written and passing (they must have been seen failing first).
+- Commit per task in each repo with the message prefix "[PLAN-0BZET T<n>]". Never push. Never edit knowledge-base except the plan's status field and the decision's Revisit Trigger.
+- Two places depend on the sibling plan PLAN-0BZEW (the runtime regime type in T5 step 4, the feed events in T8 step 2). If that plan has not landed, leave the `// [PLAN-0BZEW]` marker exactly as the plan says and continue.
+- Postgres for api tests comes from packages/api/src/test/db.ts; if no database is reachable, say so and stop rather than skipping tests.
+- Do not start PLAN-0BZEW or PLAN-0BZEY work.
+
+When done, or blocked: report per task what changed (files), which proofs exist, the exact `just check` commands run and their result, and every open question you appended to the decision.
+
+
+## workflow two:
+You are implementing PLAN-0BZEW "Strategy Deployment Runtime, Topics And Feeds".
+
+Workspace: /Users/doichevkostia/work/stxr/workspace (git submodules; each repo has a justfile; .cargo/config.toml patches strategy-core to the local checkout).
+Plan: knowledge-base/docs/execution-plans/records/PLAN-0BZEW-strategy-deployment-runtime-topics-and-feeds.md
+Decision it implements: knowledge-base/docs/decisions/records/DEC-0BZBC-strategy-deployment-and-deployment-revision-entities.md (sections Cross-repository effects, Infrastructure identity, Requirement index)
+Decision history: brainstorm/sessions/SESS-00PE96K-strategy-deployments.md
+
+Precondition: PLAN-0BZET task T1 (strategy-core Rust ids: StrategyDeploymentId, StrategyDeploymentRevisionId, subject and source with the revision id) must be committed in strategy-core/rust. Check `rg -n "StrategyDeploymentRevisionId" strategy-core/rust/src` first; if it is absent, stop and tell me.
+
+Read the plan and the decision sections above before editing. Follow tasks T1..T6 in order. All work is Rust across feed-info, data-feed-core, strats_v2, dsl-runtime, messaging, structure-strat-template-core, data-feed-definitions, event-gw.
+
+Rules:
+- No `dyn Trait`; generics. Closed sets are enums with exhaustive matches.
+- Lint one crate at a time with `cargo clippy -p <crate> --no-deps`; the workspace clippy fails on unrelated pre-existing lints.
+- Never add a git dependency on a sub-crate; the patch table only covers facade crates.
+- Regenerated artifacts (data-feed-definitions `just generate`, event-gw snapshot with the pinned seed) are committed deliberately; if a snapshot changes, explain why in the commit message.
+- Each task ends with the repo's `just check` (or the crate's `check-rs-*` target) green and the task's proof tests passing.
+- Commit per task per repo with the prefix "[PLAN-0BZEW T<n>]". Never push. Never edit knowledge-base except the plan's status field and the decision's Revisit Trigger.
+- If a task needs behaviour the decision does not define, stop, append the question to the decision's Revisit Trigger, and tell me.
+
+When done, or blocked: report per task the files changed, proofs, the check commands and results, whether the trading account feed id changed (T5) and the new event names, and every open question.
+
+
+## workflow 3:
+You are implementing PLAN-0BZEY "Strategy Deployment SDK, Client And CLI".
+
+Workspace: /Users/doichevkostia/work/stxr/workspace.
+Plan: knowledge-base/docs/execution-plans/records/PLAN-0BZEY-strategy-deployment-sdk-client-and-cli.md
+Decision it implements: knowledge-base/docs/decisions/records/DEC-0BZBC-strategy-deployment-and-deployment-revision-entities.md (sections RPC contracts, Call topology, Cross-repository effects, Delivery order)
+Decision history: brainstorm/sessions/SESS-00PE96K-strategy-deployments.md
+
+Precondition: PLAN-0BZET through task T6 is committed in structure-web and a local application server from that branch is running (you need it for `just generate_client` in application-server-client, with BACKEND_DISCOVERY_KEY and BACKEND_BASE_URL set). Verify with `curl` that `GET /api/v0/strategies/*/revisions/*/deployments` exists; if not, stop and tell me.
+
+Read the plan, the decision sections above, and the client's AGENTS.md, ARCHITECTURE.md, CONTRIBUTING.md and docs/decisions/records/DEC-0BRB6-*.md before editing. Follow tasks T1..T4 in order: T1 in application-server-client, T2 and T3 in stxr-client-app, T4 for the CLI.
+
+Rules:
+- The server representation is the truth: the client never invents a deployment id or a status. Delete the local configuration file, the hashed id provider and the ClickHouse start-time query as the plan says.
+- Keep IStxrDeploymentService as the seam for the workbench; rename start to execute through the channel, main service and agent platform.
+- Record client-only choices as a decision in stxr-client-app/docs/decisions (the client repo keeps its own records); do not put them in knowledge-base.
+- Run the client's own checks and the tests of every platform folder touched; the manual acceptance flow in T2 must be performed against the local server and reported.
+- Commit per task per repo with the prefix "[PLAN-0BZEY T<n>]". Never push. Never edit knowledge-base except the plan's status field and the decision's Revisit Trigger.
+- T4: the `structure` CLI source is not in this workspace. Before T4, ask me for its repository; do not guess.
+- If a task needs behaviour the decision does not define, stop, append the question to the decision's Revisit Trigger, and tell me.
+
+When done, or blocked: report per task the files changed, the tests run and results, the manual flow outcome (create, execute with override, stop, delete, list showing two deployments of one revision), and every open question.
+
+
 ## Context
 - Session file: brainstorm/sessions/SESS-00PE96K-strategy-deployments.md (see decision-log skill)
 

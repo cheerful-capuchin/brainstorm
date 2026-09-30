@@ -353,3 +353,18 @@ marked `(new)`.
   the revision's declarations) plus `validateMarketReferences` (instruments and
   assets must be known to the application server); shared with backtests, so
   it moves out of StrategiesService to a shared module when `start` is deleted.
+
+### D14. Revision operations live in their own namespace (2026-09-30)
+
+`strategy_deployments.commit_revision_status` becomes
+`strategy_deployment_revisions.commit_status` (user). Applied to the sibling
+operations as well: `strategy_deployment_revisions.list` and
+`strategy_deployment_revisions.get` replace `strategy_deployments.list_revisions`
+/ `get_revision` (agent's extension for consistency). Handler namespace
+`StrategyDeploymentRevisionsHttp`, service `StrategyDeploymentRevisionsService`.
+
+Note on the "native" prefix (user question): it comes from DEC-0BQ6R /
+DEC-0BSX5 "Execute DSL 2 Natively", where it separated the DSL 2 path compiled
+by the Rust core from the retired DSL 1.1 bridge. With 1.1 gone (2026-09-27
+cutover) the prefix carries no information; the new code should use
+`StrategyRevisions.checkStart` / `checkStart` without it.

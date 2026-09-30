@@ -233,3 +233,19 @@ Proposal:
 
 Open for the user: eager build at publish vs lazy; version label passed
 explicitly vs derived from the commit.
+
+### F3. Live vs paper is not in the DSL 2 spec nor in the runtime regimes (verified 2026-09-30)
+
+- DSL 2 (`dsl-processor-core/docs/dsl-spec-next.json`, DEC-0BQ6R) has no
+  live/paper notion. `account_id` is an opaque platform id parameter.
+- The runtime regime set is closed: `live` and `backtest` only
+  (`dsl-runtime/crates/dsl-runtime-contracts/src/runtime_config/regime.rs`
+  RegimeKind). A paper deployment runs the `live` regime.
+- Paper vs live is a property of the trading account
+  (`TradingAccountType::Paper`, entity-core) and is applied at execution:
+  trade_v2 order requests carry `is_paper` and route to sim-gw instead of the
+  venue. DEC-0BQ6R item 214 notes the current platform check "deployments use
+  paper accounts only".
+- Consequence for the design: a deployment `mode` is a derived attribute of
+  its (immutable) account set, not a runtime input. Persisting it is a
+  denormalization for list filters and UI colour (REF:client-views wants it).

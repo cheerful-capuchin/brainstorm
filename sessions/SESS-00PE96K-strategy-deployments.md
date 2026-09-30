@@ -1,6 +1,6 @@
 ---
 create_time: 2026-09-30T10:00:51Z
-summary: "ISS-0AGTK design: StrategyDeploymentID is a snowflake, not a hash (no dedup of identical deployments); create takes start_policy like backtests, default immediate; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
+summary: "ISS-0AGTK design: StrategyDeploymentID is a snowflake, not a hash (no dedup of identical deployments); create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
 related_sessions: []
 ---
 
@@ -133,3 +133,37 @@ regarding the way they start."
 - Recommendation put to the user: drop `strategyRuntimeRevisionId` from
   `StrategyDeploymentRevision` and keep only `strategyImageId` (docker digest);
   the runtime revision is reachable through the image row.
+
+### D3. Strategy runtime revision and docker image are pinned on the strategy revision (2026-09-30)
+
+The user rejected keeping the strategy runtime revision (runtime shell version)
+in the application server YAML config and rejected putting it on the deployment
+revision (supersedes the F1 recommendation of a `strategyImageId` on
+`StrategyDeploymentRevision`).
+
+**Why (user's words):** having it in the YAML "is silly, since I have to
+redeploy every time there is a new revision." The docker image "is built for
+the strategy revision", so "the strategy runtime revision and docker image id
+should be pinned to the strategy revision entity."
+
+**Target flow decided:**
+1. A release pipeline for the strategy platform builds all the images.
+2. The release job then calls an application server endpoint to release a new
+   strategy platform version. The version is stored in the database and marked
+   as `latest`.
+3. The client gets a field to choose the strategy platform version when
+   publishing a **strategy revision**. If unspecified, the server falls back to
+   `latest`.
+4. The chosen runtime revision and the resulting docker image id are stored on
+   `StrategyRevision`. `StrategyDeploymentRevision` carries neither; it only
+   records what service/workflow ran.
+
+**Affects:** application server config (remove the
+`strategy_runtime_revision_*` keys), `StrategyRuntimeRevision` entity and
+repository, `StrategyRevision` entity + `strategy_revisions` table, publish
+(`NativeRevisions`), start workflow `ensure_image` / `buildStrategyRuntimeImageRef`,
+backtests (same image lookup), infra release pipeline, client publish UI.
+
+**Open:** what exactly "builds all the images" means, since strategy images
+are per template (per strategy revision build identity) and cannot all be
+prebuilt; see the analysis that follows this decision.

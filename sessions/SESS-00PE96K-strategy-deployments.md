@@ -1,6 +1,6 @@
 ---
 create_time: 2026-09-30T10:00:51Z
-summary: "ISS-0AGTK design: StrategyDeploymentID is a snowflake, not a hash (no dedup of identical deployments); create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
+summary: "ISS-0AGTK design: StrategyDeploymentID is a snowflake, not a hash (no dedup of identical deployments); create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline that runs as an activity-worker workflow behind an internal endpoint with a system actor; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
 related_sessions: []
 ---
 
@@ -167,3 +167,26 @@ backtests (same image lookup), infra release pipeline, client publish UI.
 **Open:** what exactly "builds all the images" means, since strategy images
 are per template (per strategy revision build identity) and cannot all be
 prebuilt; see the analysis that follows this decision.
+
+### D4. The platform release runs as an activity-worker workflow behind an internal endpoint (2026-09-30)
+
+The release of a strategy platform version is a durable workflow in the
+activity worker (a new `WorkflowType`, alongside StrategyBuild / StrategyStart /
+StrategyStop / Backtest). An internal application-server endpoint triggers it
+("go build the thing"); the workflow builds the images and then calls the
+application server endpoints needed to register the release and mark it
+`latest`.
+
+**Why (user's words):** "I think that should be the activity worker workflow.
+We'll add an internal endpoint to go build the thing and call the necessary
+endpoints."
+
+**Actor:** the user expects a system actor of some kind, such as a service
+account, for these automated calls, and asked whether that is still good
+practice. Answer given: it is; the existing internal endpoints already yield
+an actor of type `system` from the static API key + discovery header
+(`lib/api.ts` ApiKeyRequired / InternalEndpoint), and Cloud Tasks already
+supports attaching a Google OIDC identity token from a service account
+(`gcp/tasks.ts` buildInternalOidcHttpRequest). Recommendation: a dedicated
+release service account whose identity token the server verifies (audience =
+server origin), instead of sharing the worker's static key. Not yet decided.

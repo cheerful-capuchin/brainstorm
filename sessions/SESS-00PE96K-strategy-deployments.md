@@ -1,6 +1,6 @@
 ---
 create_time: 2026-09-30T10:00:51Z
-summary: "ISS-0AGTK design: StrategyDeploymentID is a snowflake, not a hash (no dedup of identical deployments); real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
+summary: "ISS-0AGTK design: StrategyDeploymentID is a snowflake, not a hash (no dedup of identical deployments); create takes start_policy like backtests, default immediate; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
 related_sessions: []
 ---
 
@@ -91,3 +91,45 @@ deployment, there is a reason for that."
 - Affects: strategy-core (rust + ts ids, generated code), domain id wasm crate,
   structure-web api (strategies-service start path, deployments service and
   repository, app-db schema), stxr-client-app id provider.
+
+### D2. Deployment create takes a `start_policy`, normalized with backtests (2026-09-30)
+
+`CreateStrategyDeploymentBody` gets the same `start_policy` union as
+`CreateBacktestBody` (`structure-web/packages/api/src/backtests/backtest-http.ts`):
+`"immediate" | "on_demand" | { scheduled: { start_time } }`. Default is
+`immediate`.
+
+**Why (user's words):** "we should normalize the backtest and deployment
+regarding the way they start."
+
+**Consequences (proposed shape, follows the backtest service):**
+- `create` commits the deployment row in `Pending` with no revision. With
+  `immediate`, the service then calls the same code path as `:start`, which
+  appends the first `StrategyDeploymentRevision` and creates the start
+  workflow. If that second step fails, the deployment stays `Pending` and the
+  response reports it, so the client retries with `:start` (backtests return
+  `execution: { state }` for the same case).
+- `:start` becomes the single "append a revision and start it" primitive.
+  Precondition: status in `pending | stopped | error`.
+- `scheduled` is accepted by the schema but rejected with FailedPrecondition
+  until implemented, as backtests do today.
+- This replaces the earlier proposal of creating the deployment, its first
+  revision and the workflow in one transaction.
+
+## Findings recorded for later agents
+
+### F1. Platform / runtime version is not part of the DSL 2.0 spec (verified 2026-09-30)
+
+- A published DSL 2.0.0 revision carries `version`, `environment_id`, the
+  canonical document and embedded node groups (DEC-0BQ6R D37;
+  `structure-web/packages/api/src/strategies/native-revisions.ts` PublishBody).
+  The environment id is the pinned DSL environment digest (spec + Structure
+  library + catalog, pins E/F/G/H), and it lives on the strategy revision.
+- The runtime shell version (`StrategyRuntimeRevision`: git SHA + context of
+  the template repo) is NOT in the spec. It comes from application server
+  config (`config.strategyRuntimeRevision`) at start time and is recorded on
+  `StrategyImage.runtimeRevision`. Template id = f(environment_id,
+  build_identity) and does not include it.
+- Recommendation put to the user: drop `strategyRuntimeRevisionId` from
+  `StrategyDeploymentRevision` and keep only `strategyImageId` (docker digest);
+  the runtime revision is reachable through the image row.

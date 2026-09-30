@@ -1,6 +1,6 @@
 ---
 create_time: 2026-09-30T10:00:51Z
-summary: "ISS-0AGTK design: StrategyDeploymentID is a snowflake, not a hash (no dedup of identical deployments); create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline that runs as an activity-worker workflow behind an internal endpoint with a system actor; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
+summary: "ISS-0AGTK design: StrategyDeploymentRevision name; account exclusive to one active deployment (paper too); keep strategy-wide stop; no data migration, drop old tables; environments out of scope; StrategyDeploymentID is a snowflake, not a hash; create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline that runs as an activity-worker workflow behind an internal endpoint with a system actor; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
 related_sessions: []
 ---
 
@@ -270,3 +270,38 @@ undeletable live environment per user; delete as a durable cascade workflow
 (stop deployments, soft-delete deployments and accounts, purge sim-gw state);
 open points were ClickHouse data purge vs retention, and sandbox caps or
 `expire_time`.
+
+### D6. Per-start record is named `StrategyDeploymentRevision` (2026-09-30)
+
+Chosen over `StrategyDeploymentRun`. Columns stay fully qualified
+(`strategy_revision_id` vs `strategy_deployment_revision_id`) to avoid
+confusion with `StrategyRevision`.
+
+### D7. A trading account is exclusive to one active deployment (2026-09-30)
+
+An account may be attached to at most one non-terminal deployment at a time.
+No exemption for paper accounts. History is kept: the connection row survives
+after the deployment reaches a terminal status; the rule is enforced in the
+create/start transaction (lock the account rows, reject with
+`TradingAccountBusy` if another non-terminal deployment holds one).
+
+### D8. Keep a strategy-wide stop as a bulk operation (2026-09-30)
+
+Stop-by-deployment-id stays the primitive. A strategy-level bulk stop remains
+on top of it (stops every non-terminal deployment of the strategy).
+
+### D9. No data migration; drop and recreate tables (2026-09-30)
+
+**User's words:** "drop that shit, we're in the demo stage. We can drop the
+whole db if need to. Ideally, just drop the unnecessary table and create a
+new one."
+
+Consequences: no backfill of active runs, no copying of
+`strategies_trading_accounts_connections`, no compatibility window for v1
+workflows, no dual-publishing of revision-status events. The migration drops
+`strategy_deployments` and `strategies_trading_accounts_connections`, drops
+`strategies.provisioned_revision_id`, `strategy_revisions.status` and
+`idx_strategy_revisions_by_status`, and creates `strategy_deployments`,
+`strategy_deployment_revisions` and
+`strategy_deployments_trading_accounts_connections`. Existing deployed
+strategies must be stopped (or the Cloud Run resources deleted) before cutover.

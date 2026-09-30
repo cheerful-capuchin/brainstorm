@@ -1,6 +1,6 @@
 ---
 create_time: 2026-09-30T10:00:51Z
-summary: "ISS-0AGTK design recorded as DEC-0BZBC (proposed): deployments mutable (display_name, description, latest revision pointer), revisions immutable and carry accounts + bindings, :execute (renamed from :start, future rollout) may override them; mode + error/logging policy fixed on the deployment; first_ready_time dropped; StrategyDeploymentRevision name; account exclusive to one active deployment (paper too); keep strategy-wide stop; no data migration, drop old tables; environments out of scope; StrategyDeploymentID is a snowflake, not a hash; create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline that runs as an activity-worker workflow behind an internal endpoint with a system actor; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
+summary: "ISS-0AGTK design recorded as DEC-0BZBC (proposed): deployments mutable (display_name, description, latest revision pointer), revisions immutable and carry accounts + bindings, :execute (renamed from :start, future rollout) may override them; mode fixed on the deployment, error/logging policy per revision; first_ready_time dropped; StrategyDeploymentRevision name; account exclusive to one active deployment (paper too); keep strategy-wide stop; no data migration, drop old tables; environments out of scope; StrategyDeploymentID is a snowflake, not a hash; create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline that runs as an activity-worker workflow behind an internal endpoint with a system actor; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
 related_sessions: []
 ---
 
@@ -434,3 +434,13 @@ Resolved by D16: mode never changes.
   start). It is derivable from `strategy_deployment_revisions.list`; noted
   in the revisit triggers as a possible projection if the performance query
   needs it.
+
+### D17. Error policy and logging policy are per deployment revision (2026-09-30)
+
+Corrects the D16 interpretation of "arguments". The user meant the base
+strategy spec arguments (the strategy revision's own parameters), which
+already live on `StrategyRevision` and are not repeated on the deployment.
+`error_policy` and `logging_policy` move back to
+`StrategyDeploymentRevision`, are part of the create configuration, and may
+be overridden on `:execute`. Only `mode` and `strategy_revision_id` stay fixed
+on the deployment.

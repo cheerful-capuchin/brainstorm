@@ -444,3 +444,32 @@ already live on `StrategyRevision` and are not repeated on the deployment.
 `StrategyDeploymentRevision`, are part of the create configuration, and may
 be overridden on `:execute`. Only `mode` and `strategy_revision_id` stay fixed
 on the deployment.
+
+### D18. Implementation prerequisites answered (2026-09-30)
+
+1. Runtime account lookup: the generated runtime config's live regime section
+   carries the revision's `trading_account_ids`; the runtime loads those by
+   id (`accounts_scope`) instead of `strategies_scope`, which is removed.
+2. NATS topics keyed by strategy id on the deployment path (starting with
+   `TargetExecutorTopic::TargetPositionStatusUpdate`) are re-keyed by
+   deployment id. In scope.
+3. Trading account events feed: break it. `strategy_attached/detached`
+   become `strategy_deployment_revision_attached/detached` with strategy id,
+   strategy revision id, deployment id, deployment revision id. event-gw fold
+   follows.
+4. `deployment_revision_id` goes into the runtime (LiveRegimeConfig, telemetry
+   source, Rust and TS subjects).
+5. Rust rename `NewStrategyDeploymentId` -> `StrategyDeploymentId` now; new
+   `StrategyDeploymentRevisionId`.
+6. Strategy revision delete is blocked by any deployment (history), via the
+   existing `DeleteRequiresNoDeployments` reason.
+7. Backtests bind accounts by id only; no exclusivity.
+8. Delivery: server first, then regenerate application-server-client, then fix
+   the client and CLI. One feature, three steps.
+9. Client ClickHouse deployment queries filtering by deployment id: not a
+   requirement of this work.
+
+All folded into DEC-0BZBC as "Cross-repository effects" and "Delivery order".
+Still open before a plan: governing SPEC (or waiver), DEC status accepted,
+REF:strategy provenance row, Linear ticket for the plan, and committing the
+knowledge-base branch.

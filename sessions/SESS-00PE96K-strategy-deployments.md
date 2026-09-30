@@ -1,6 +1,6 @@
 ---
 create_time: 2026-09-30T10:00:51Z
-summary: "ISS-0AGTK design recorded as DEC-0BZBC (proposed): StrategyDeploymentRevision name; account exclusive to one active deployment (paper too); keep strategy-wide stop; no data migration, drop old tables; environments out of scope; StrategyDeploymentID is a snowflake, not a hash; create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline that runs as an activity-worker workflow behind an internal endpoint with a system actor; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
+summary: "ISS-0AGTK design recorded as DEC-0BZBC (proposed): deployments mutable (display_name, description, latest revision pointer), revisions immutable and carry accounts + bindings + policies, :start may override them; StrategyDeploymentRevision name; account exclusive to one active deployment (paper too); keep strategy-wide stop; no data migration, drop old tables; environments out of scope; StrategyDeploymentID is a snowflake, not a hash; create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline that runs as an activity-worker workflow behind an internal endpoint with a system actor; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
 related_sessions: []
 ---
 
@@ -368,3 +368,41 @@ DEC-0BSX5 "Execute DSL 2 Natively", where it separated the DSL 2 path compiled
 by the Rust core from the retired DSL 1.1 bridge. With 1.1 gone (2026-09-27
 cutover) the prefix carries no information; the new code should use
 `StrategyRevisions.checkStart` / `checkStart` without it.
+
+### D15. Deployments are mutable; configuration lives on the immutable revision (2026-09-30)
+
+Supersedes the inputs-on-the-deployment model of the first DEC-0BZBC draft.
+
+**User's words:** "You should be able to modify the trading accounts and the
+variable values when restarting the deployment. We should preserve those
+settings in the strategy deployment revisions. Then, when displaying the
+deployment performance, we can plot on the time chart when you made updates
+to the variables and how the performance of a particular deployment has
+changed. You should be able to add the display name and description to each
+of the deployments. Therefore, the deployments are mutable, the deployment
+revisions are immutable. The deployment has pointer to the latest running
+revision. Therefore, when you run strategy_deployments::start you can
+optionally overwrite the previous variable values or trading accounts."
+
+Applied in DEC-0BZBC:
+- `StrategyDeployment`: id, strategy_id, strategy_revision_id (still
+  immutable: a different strategy revision is a different deployment),
+  display_name, description, latest_revision_id, projected status and mode,
+  first_ready_time. New `update` operation (PATCH) and `Updated` event with
+  values/prev_values, mirroring Strategy.
+- `StrategyDeploymentRevision`: mode, error_policy, logging_policy,
+  strategy_variable_bindings, strategy_spec_arguments, plus the run fields.
+  Account connections keyed by (deployment, revision, account).
+- create always writes revision 1 (Pending); `:start` body has optional
+  trading_account_ids / bindings / policies; absent fields carry the latest
+  revision's values forward. A Pending never-launched revision that gets
+  overridden is closed with stop_reason `Superseded` (agent's design to keep
+  revisions immutable; not explicitly requested).
+- Chart annotations come from `strategy_deployment_revisions.list`
+  (create_time + diff between consecutive revisions); no extra endpoint.
+- Exclusivity (D7) now reads "one non-terminal deployment revision per
+  account"; carrying an account forward on restart is not a conflict.
+
+Open: may `mode` change between revisions of one deployment (paper -> live
+accounts on restart)? Currently allowed by the rules as written; the
+deployment projects the latest revision's mode.

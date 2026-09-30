@@ -16,8 +16,14 @@ if (!existingDeposit || !Credit.isActivated(existingDeposit)) {
 
 to a proper whitelist that includes the identifiers, not pubkeys.
 
-
 This all seems quite trivial, except the email sending part.
 How is the "OTP" generated? I guess we can take inspiration from https://github.com/anomalyco/openauth, which I downloaded into ~/work/gh/openauth.
+We're using GCP in infra/infra. How do you send emails? Does Google have an API/Service, like AWS, or do I need to use something external?
 
+
+### Whitelist
+We should remove the whilelist from the YAML config and instead have it be maintained in the database and add some endpoints to do that.
+
+
+### Internal Access
 

@@ -1,6 +1,6 @@
 ---
 create_time: 2026-09-30T10:00:51Z
-summary: "ISS-0AGTK design recorded as DEC-0BZBC (proposed): deployments mutable (display_name, description, latest revision pointer), revisions immutable and carry accounts + bindings, :execute (renamed from :start, future rollout) may override them; mode fixed on the deployment, error/logging policy per revision; first_ready_time dropped; StrategyDeploymentRevision name; account exclusive to one active deployment (paper too); keep strategy-wide stop; no data migration, drop old tables; environments out of scope; StrategyDeploymentID is a snowflake, not a hash; create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline that runs as an activity-worker workflow behind an internal endpoint with a system actor; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
+summary: "ISS-0AGTK design recorded as DEC-0BZBC (proposed) with plans PLAN-0BZET (server), PLAN-0BZEW (runtime/topics/feeds), PLAN-0BZEY (SDK/client/CLI); no spec: deployments mutable (display_name, description, latest revision pointer), revisions immutable and carry accounts + bindings, :execute (renamed from :start, future rollout) may override them; mode fixed on the deployment, error/logging policy per revision; first_ready_time dropped; StrategyDeploymentRevision name; account exclusive to one active deployment (paper too); keep strategy-wide stop; no data migration, drop old tables; environments out of scope; StrategyDeploymentID is a snowflake, not a hash; create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline that runs as an activity-worker workflow behind an internal endpoint with a system actor; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
 related_sessions: []
 ---
 
@@ -473,3 +473,29 @@ All folded into DEC-0BZBC as "Cross-repository effects" and "Delivery order".
 Still open before a plan: governing SPEC (or waiver), DEC status accepted,
 REF:strategy provenance row, Linear ticket for the plan, and committing the
 knowledge-base branch.
+
+### D19. Execution plans written for agents, no spec (2026-09-30)
+
+User: plans go to `knowledge-base/docs/execution-plans/records`, written for
+Claude Opus agents, format optimized for agents; no governing SPEC ("I think
+they are no longer useful"). Traceability mode `request_backed` against the
+new Requirement index (`BZBC-01`..`BZBC-36`) added to DEC-0BZBC.
+
+Written (all `status: draft`, `linear_issue: none`, uncommitted on the
+knowledge-base branch `dec-0bzbc-strategy-deployment-entity`):
+- PLAN-0BZET Strategy Deployment Entities, Application Server (strategy-core
+  ids and TS entities, entity-core, domain, app-db, api, workflow, activity
+  worker, internal SDK). 9 tasks.
+- PLAN-0BZEW Strategy Deployment Runtime, Topics And Feeds (Rust consumers of
+  the rename, dsl-runtime LiveRegimeConfig, template account loading,
+  messaging/strats_v2 topic re-key, data-feed-definitions feed, event-gw
+  fold). 6 tasks.
+- PLAN-0BZEY Strategy Deployment SDK, Client And CLI (regenerate
+  application-server-client, client deployment platform, workbench and agent
+  surface, CLI). 4 tasks.
+
+Gaps left for the user: the `structure` CLI source is not in the workspace
+(PLAN-0BZEY T4 says locate it); Linear tickets for the three plans; DEC
+status still proposed; REF:strategy provenance row; pre-existing catalog
+failure on duplicate id DEC-0BRC4 (two files) blocks `just catalog` until
+fixed.

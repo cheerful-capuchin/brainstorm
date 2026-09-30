@@ -190,3 +190,46 @@ supports attaching a Google OIDC identity token from a service account
 (`gcp/tasks.ts` buildInternalOidcHttpRequest). Recommendation: a dedicated
 release service account whose identity token the server verifies (audience =
 server origin), instead of sharing the worker's static key. Not yet decided.
+
+### F2. Release pipeline facts and the proposal put to the user (2026-09-30, not decided)
+
+Facts (verified by code exploration):
+- No automated release exists in structure-web, infra, structure-strat-template
+  or backtest-post-processor. Releasing = template readme recipe: pin
+  core/DSL revisions, `just build_builder`, paste builder digest into the
+  template `Dockerfile` (needs a second "commit B"), paste that SHA into
+  `infra/infra/services/application-server/application-server.ts`, `pulumi up`.
+- Four images with different lifetimes: strategy-builder and strategy-runner
+  (pinned by digest inside the template Dockerfile), backtest-post-processor
+  (infra bake, digest in server config `backtest_post_processor_image`), and
+  the per-template strategy image `tmpl-<template>:<runtimeRev>-pp-<digest>`
+  built lazily by the StrategyBuild workflow on first start/backtest.
+- The server holds exactly one runtime revision, from config, upserted at
+  startup in `run.ts`; start and backtest read `config.strategyRuntimeRevision`.
+
+Proposal:
+- Evolve `StrategyRuntimeRevision` into `StrategyPlatformRelease` (snowflake
+  id; version label; status Building/Available/Failed/Deprecated; template
+  commit uri/revision/context; builder, runner, post-processor image digests;
+  supported DSL environment ids). `latest` = newest Available by release_time,
+  no stored pointer.
+- `strategy_revisions` gains `strategy_platform_release_id` (publish chooses,
+  latest fallback) and `strategy_image_id`.
+- Template Dockerfile takes builder/runner/post-processor as build args so one
+  commit = one release.
+- New `WorkflowType.StrategyPlatformRelease` in the activity worker: build
+  post-processor, builder, runner; smoke-build the dummy strategy; commit.
+  Triggered by internal `POST /api/v0/strategy-platform/releases:release`
+  (GcpCredentialRequired + discovery header), callback
+  `POST .../releases/{id}:commit`. Public list/get for the client picker.
+- Remove the four config keys and the startup upsert; StrategyBuild keyed by
+  release id (fingerprint sha256(templateId + releaseId), tag without -pp-).
+- Recommended: trigger StrategyBuild eagerly at publish; `ensure_image` stays
+  as safety net in start/backtest.
+- Infra: release service account, activity-worker Cloud Build SA needs writer
+  on the `images` Artifact Registry repo (has only `strategies` today).
+- Migration: one Available release from current config values; backfill DSL 2
+  revisions to it; `strategy_images.runtime_revision` -> release id.
+
+Open for the user: eager build at publish vs lazy; version label passed
+explicitly vs derived from the commit.

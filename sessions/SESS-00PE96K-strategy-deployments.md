@@ -249,3 +249,24 @@ explicitly vs derived from the commit.
 - Consequence for the design: a deployment `mode` is a derived attribute of
   its (immutable) account set, not a runtime input. Persisting it is a
   denormalization for list filters and UI colour (REF:client-views wants it).
+
+### D5. Environments (Stripe-sandbox style) are out of scope for now (2026-09-30)
+
+The user explored a disposable "environment" container (a trader's testing
+pipeline creates an environment, creates accounts and deployments in it, and
+discards the whole environment at the end) and then decided not to spend time
+on it now. Live vs paper stays a derived `mode` on the deployment, computed
+from the account set at create (F3), with the "no mixed live and paper
+accounts" rule.
+
+**Why (user's words):** "forget about the environments for now, I don't want
+to spend time thinking about it."
+
+**Kept for later agents (proposal only, undecided):** an `Environment` entity
+(kind Live | Sandbox, status Active | Deleting | Deleted) owning trading
+accounts and deployments but not strategies or revisions; `environment_id` on
+accounts and deployments as a field and list filter, not a path parent; one
+undeletable live environment per user; delete as a durable cascade workflow
+(stop deployments, soft-delete deployments and accounts, purge sim-gw state);
+open points were ClickHouse data purge vs retention, and sandbox caps or
+`expire_time`.

@@ -324,3 +324,14 @@ Written as DEC-0BZBC (`knowledge-base/docs/decisions/records/DEC-0BZBC-strategy-
 TypeScript contracts with JSDoc that explains what each property is (when not
 obvious) and why it exists. The platform runtime revision / release work is
 excluded from that record for now.
+
+### D12. Call topology added to DEC-0BZBC (2026-09-30)
+
+The user asked for the topology / call stack of every deployment action in the
+codebase-explorer node syntax (`Type::method <tags> [intent] path:line`),
+exactness not required. Added as the "Call topology" subsection of DEC-0BZBC:
+create, start (plus the StrategyStart re-entry), commit status, stop (plus
+the StrategyStop re-entry), stop_deployments, list/get/list_revisions/
+get_revision, delete. There is no `update` action: deployment inputs are
+immutable. Existing nodes cite structure-web `path:line`; planned nodes are
+marked `(new)`.

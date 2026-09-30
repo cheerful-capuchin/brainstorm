@@ -1,6 +1,6 @@
 ---
 create_time: 2026-09-30T10:00:51Z
-summary: "ISS-0AGTK design: StrategyDeploymentRevision name; account exclusive to one active deployment (paper too); keep strategy-wide stop; no data migration, drop old tables; environments out of scope; StrategyDeploymentID is a snowflake, not a hash; create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline that runs as an activity-worker workflow behind an internal endpoint with a system actor; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
+summary: "ISS-0AGTK design recorded as DEC-0BZBC (proposed): StrategyDeploymentRevision name; account exclusive to one active deployment (paper too); keep strategy-wide stop; no data migration, drop old tables; environments out of scope; StrategyDeploymentID is a snowflake, not a hash; create takes start_policy like backtests, default immediate; strategy runtime revision + image pinned on the StrategyRevision (not the deployment), chosen at publish with latest fallback, released via a platform release pipeline that runs as an activity-worker workflow behind an internal endpoint with a system actor; real StrategyDeployment entity + immutable StrategyDeploymentRevision per start/stop; deployment carries variable bindings + accounts; _time naming; table/connection/expand conventions; wildcard list across revisions/strategies; StrategiesService.start replaced by StrategyDeploymentsService.create"
 related_sessions: []
 ---
 
@@ -319,7 +319,7 @@ path segments; Hono route params accept it either way.
 
 ### D11. Decision record in the knowledge base (2026-09-30)
 
-The user asked for a DEC record covering the `StrategyDeployment` and
+Written as DEC-0BZBC (`knowledge-base/docs/decisions/records/DEC-0BZBC-strategy-deployment-and-deployment-revision-entities.md`, branch `dec-0bzbc-strategy-deployment-entity`, status proposed, uncommitted). The user asked for a DEC record covering the `StrategyDeployment` and
 `StrategyDeploymentRevision` entities and the RPC contracts, written as
 TypeScript contracts with JSDoc that explains what each property is (when not
 obvious) and why it exists. The platform runtime revision / release work is

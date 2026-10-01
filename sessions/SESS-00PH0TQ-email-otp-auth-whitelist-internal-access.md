@@ -192,3 +192,18 @@ principal config -> provider + policy resource -> replace the shared
   signing helpers); the client does not sign anything, it returns the token plus
   the code. Purpose: bind the verify call to a specific challenge so a guessed
   snowflake id cannot be used to burn or brute-force someone else's challenge.
+
+## OTP challenge format (user accepted 2026-10-01)
+
+- The OTP challenge returned to the client is a server-HMAC-signed blob
+  (reusing the SIWS sign/verify helpers). The client treats it as opaque: it
+  does not decode it, holds it, and sends it back with the typed code. Any
+  value the UI needs (expiry, destination) is returned as a separate response
+  field, not read from the blob.
+- Working design going forward (not separately rejected): own `otp_challenges`
+  table with keyed code hash, attempts, expiry and used_time; one atomic UPDATE
+  on verify; whitelist table `allowed_identifiers` keyed by identifier id.
+- Magic link discussed: if added later, build it as approve-then-poll on the
+  same row (link approves the pending challenge after a click; the requesting
+  client polls and exchanges the blob for tokens). OTP ships first. Not yet
+  decided whether magic link is wanted at all.

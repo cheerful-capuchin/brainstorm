@@ -1,6 +1,6 @@
 ---
 create_time: 2026-10-01T10:56:23Z
-summary: "Email+OTP sign-in: email as Identifier type; whitelist by identifier in DB with endpoints; shared API key rejected for admin; system actor gets principal; app server to issue API keys, Pulumi per-infra tokens wanted; OTP, email provider, org model open"
+summary: "Email+OTP sign-in: email as Identifier type; whitelist by identifier in DB; RBAC model accepted: principal -> role_bindings -> static role->permission table -> route check -> ownership in domain; roles/permissions closed sets in iam-core; root principals in Pulumi-rendered config; app server issues API keys, Pulumi dynamic provider wanted; OTP, email provider open"
 related_sessions: []
 ---
 
@@ -84,3 +84,51 @@ Manager) is handed to application-server, activity-worker, target-exec, sim-gw,
 drift position-server and strategy containers; most Cloud Run services run as
 the same `cloud-run` service account; the infra repo has no Pulumi dynamic
 provider yet.
+
+## Accepted access-control model (user confirmed 2026-10-01)
+
+The user restated the model and asked to persist it. Treat it as the agreed
+direction for platform authorization. Not yet a knowledge-base record.
+
+Request flow:
+1. Authenticate the credential (platform JWT, Google identity token,
+   Cloudflare Access assertion, or issued API key) into a principal.
+2. Load the principal's active role bindings from the database.
+3. Expand roles into permissions through a static table in code.
+4. At the route, check that the required permission is present; declare the
+   required permission where the route is registered, next to the auth
+   middleware, so no route can omit it. Handlers receive an actor that has
+   already passed.
+5. In the service/domain layer, apply ownership: a resource is modified only by
+   a principal in its owner set, enforced as a SQL predicate. Holding the
+   permission to modify strategies does not allow modifying a strategy owned by
+   another user or organization.
+
+Definitions and storage:
+- Permissions and roles are closed sets in `iam-core` (TS and Rust), following
+  the `Identifier.Type` pattern: integer discriminants, display table, count
+  assertion. Role -> permissions is a static table in code. Adding either is a
+  code change.
+- Persisted tables: `role_bindings` (principal_type, principal_value, role,
+  created_by, create_time, revoke_time) and `api_keys` (id, secret_hash, label,
+  roles, created_by, create_time, expire_time, revoke_time, last_used_time).
+  Store integer discriminants, append-only variants; an unknown role in a row
+  is denied and alerted.
+- Root principals live in the application-server config rendered by Pulumi,
+  not in the database. Ideally the only root is a dedicated deployer service
+  account that humans impersonate; the GCP IAM impersonation binding and its
+  audit logs are the authority chain for "who is root".
+- Human role bindings are data written through an internal endpoint by the
+  deployer identity from the infra repo (Pulumi dynamic provider), so changes
+  go through pull requests and `pulumi up`.
+
+Staff and ownership:
+- Staff never bypass ownership silently. Acting on another owner's resource
+  requires a separate explicit permission (for example `strategies.read_any`),
+  passed down to the repository as a flag, and is visible in the audit log.
+- Organization + Membership, if introduced, is the owner model for customer
+  resources (members with an org role form the owner set), not the platform
+  admin model.
+
+Audit: every mutation and every denial is an `argus.event` carrying the
+principal and the permission; `argus.event` must gain an actor field.

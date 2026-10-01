@@ -39,3 +39,19 @@ Cloudflare Email Service looks promising and we already have infra there.
 Google Cloud has no service of its own.
 Options: Google Workspace relay, AWS SES, SendGrid, Mailgun, Mailjet, Postmark.
 
+
+
+I notice the chicken and the egg problem here.
+How do I add the pulumi actor to manage the permissions?
+For instance, I have my own stxr.io email that I use and I have the google account in gcp.
+Therefore, every time I run pulumi up, gcloud commands use my application default credentials and based on that gcp knows what I'm allowed to do.
+
+I was added by my manager to the gcp org and then project in order to obtain those permissions.
+So, the manager had the "owner" role in gcp and that's how he managed to do that.
+
+However, the manager had to obtain the "owner" role somehow.
+
+Same thing with the application server, somehow someone needs to have the authority.
+So, how is the first "owner" gets into the application server database?
+
+

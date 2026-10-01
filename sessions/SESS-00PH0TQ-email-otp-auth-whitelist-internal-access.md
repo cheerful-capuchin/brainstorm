@@ -171,3 +171,24 @@ repo. Pieces, in dependency order:
 Rollout: ship sets/tables/endpoints -> deployer account + impersonation + root
 principal config -> provider + policy resource -> replace the shared
 `convex-backend-api-key` one service at a time, then delete it.
+
+## Whitelist decision (user, 2026-10-01)
+
+- The "credit deposits" idea is dropped entirely (Credit.Deposit entity,
+  `credit_deposits` YAML, `NewDepositRequiredError`). It is replaced by a
+  proper whitelist flow: a database table of allowed identifiers (by identifier
+  id), managed through endpoints under the RBAC model above.
+- Still open: table/entity name; behaviour for an email that is not
+  whitelisted (generic success vs explicit error).
+
+## OTP storage (agent proposal, discussed 2026-10-01, not yet accepted)
+
+- Do not reuse `auth_challenges` (consumed-ids guard, written at verify). Give
+  OTP its own table with a snowflake id, identifier_id, client_id, keyed
+  code_hash = HMAC(secret, id || code), expire_time, attempts, used_time.
+- Verify is one atomic UPDATE that increments attempts and sets used_time on
+  match, bounded by attempt limit and expiry.
+- The challenge returned to the client is server-HMAC-signed (reusing the SIWS
+  signing helpers); the client does not sign anything, it returns the token plus
+  the code. Purpose: bind the verify call to a specific challenge so a guessed
+  snowflake id cannot be used to burn or brute-force someone else's challenge.

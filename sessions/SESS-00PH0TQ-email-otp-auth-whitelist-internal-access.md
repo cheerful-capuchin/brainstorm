@@ -240,3 +240,8 @@ principal config -> provider + policy resource -> replace the shared
 - Update 2026-10-01: user accepted the plan and the plain HTML template with
   `{{placeholders}}` and a strict renderer (JSX/React Email and MJML rejected
   for a single email). Implementation delegated to an Opus subagent.
+- 2026-10-01: PoC implemented in `prototypes/otp-sign-in` (uncommitted), 210
+  tests pass. Open until a human checks the Cloudflare dashboard: whether a
+  `from` on a non-onboarded domain is accepted, and whether the REST API takes
+  `from` as `{address, name}`. Rate limiting and row cleanup deliberately out
+  of PoC scope.

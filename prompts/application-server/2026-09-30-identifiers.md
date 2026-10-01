@@ -55,3 +55,24 @@ Same thing with the application server, somehow someone needs to have the author
 So, how is the first "owner" gets into the application server database?
 
 
+## PoC
+I want a PoC with cloudflare. Create a plan for the subagent.
+
+Create a new repo in prototypes/otp-sign-in.
+There, I want to have a simplified version of the flow. The simples things is to have the stdin command bus.
+So, the user types in the commands like "/sign-in email=foo@stxr.io;".
+You can use a file as a storage. even JSON will work. {table: "", "data": {} }
+So, the sign in command comes in, we build the identifier id (sha256 hash is fine), build the challenge id (crypto.randomUUID()).
+no need in whitelist
+build the challenge, the code, embed the code in the HTML email (this part must be as if it's a prod application). We need to have a beautiful email
+and a simple way to substitute the values.
+Then we send the email through the cloudflare api.
+Then, once I get the email, i'll type "/verify challenge="";code="";
+
+The email part must have a simple way to preview the email visually. So, build a tool that opens an email in a browser, where I can substitute the variables.
+
+Before we send any emails, I want to polish it up.
+
+### Questions
+
+## How do you compose the emai? Do you use some JS templating? Do we use JSX?

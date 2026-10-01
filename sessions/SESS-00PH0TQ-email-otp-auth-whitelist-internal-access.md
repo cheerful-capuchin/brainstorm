@@ -221,3 +221,19 @@ principal config -> provider + policy resource -> replace the shared
 - Email verify request shape is `{ challenge, code }`, mirroring the existing
   `{ challenge, signature }`. UI-facing values (expiry, masked destination) are
   separate response fields, never read from the blob.
+
+## OTP proof of concept (user decided 2026-10-01)
+
+- Build a PoC with Cloudflare Email Service in `prototypes/otp-sign-in`
+  (a directory in the `prototypes` repo). Plan written to
+  `prototypes/otp-sign-in/docs/plans/2026-10-01-otp-sign-in-poc.md`.
+- Simplifications chosen by the user: stdin command bus
+  (`/sign-in email=…;`, `/verify challenge=…;code=…;`), JSON file storage
+  shaped `{table, data}`, identifier id as sha256, challenge id as
+  `crypto.randomUUID()`, no whitelist.
+- The email itself must be production quality: a beautiful HTML email with a
+  simple way to substitute values, plus a tool that opens it in a browser with
+  editable variables. No real email is sent until the template is polished;
+  sending is opt-in behind a flag.
+- Open: email composition approach (plain HTML template with placeholders was
+  recommended over JSX/React Email and MJML; the user asked, not yet chosen).

@@ -1,6 +1,6 @@
 ---
 create_time: 2026-10-01T10:56:23Z
-summary: "Add email+OTP sign-in: email becomes an Identifier type in iam-core; signup whitelist keyed by identifier, moved from YAML credit_deposits to the database with endpoints; shared API key rejected for whitelist admin; OTP design, email provider and Organization/membership permission model still open"
+summary: "Email+OTP sign-in: email as Identifier type; whitelist by identifier in DB with endpoints; shared API key rejected for admin; system actor gets principal; app server to issue API keys, Pulumi per-infra tokens wanted; OTP, email provider, org model open"
 related_sessions: []
 ---
 
@@ -68,3 +68,19 @@ yet: server-side OTP challenge row with expiry and attempt limit; a dedicated
 transactional email provider behind a port; staff identity from the company
 identity provider as a new actor kind with platform roles, kept separate from a
 customer Organization/Membership model.
+
+## Direction added by the user (2026-10-01, later in the conversation)
+
+- The system actor gains more properties, at least a `principal` naming the
+  calling service or key.
+- API keys stay for internal services. The desired end state is that the
+  application server issues the API keys itself, and the "super option" is
+  Pulumi support so an access token can be generated per piece of infra.
+- Not decided: key format, permission set, whether GCP OIDC identity replaces
+  keys for in-GCP callers.
+
+Facts: today one shared `convex-backend-api-key` (random password in Secret
+Manager) is handed to application-server, activity-worker, target-exec, sim-gw,
+drift position-server and strategy containers; most Cloud Run services run as
+the same `cloud-run` service account; the infra repo has no Pulumi dynamic
+provider yet.

@@ -1,5 +1,5 @@
 ## Context
-- ensure there is a session file created (see the decision-log skill)
+- session file: `brainstorm/sessions/SESS-00PH0TQ-email-otp-auth-whitelist-internal-access.md` (see the decision-log skill)
 
 We want to add a new authentication method to our application - email with OTP sent to your email account.
 I've already envisioned the iam-core/ts/src/entities/identifier/identifier.ts entity that includes different kinds of identifiers.
@@ -31,4 +31,11 @@ The lazy option is to have the api key and use that. However, it's a very unstab
 How would you manage the permissions within the structure platform and have a set of accounts that are allowed to modify it?
 I was thinking of introducing the hierarchy like Organization and then have users have memberships in the organizations.
 We could reserve the structure org id and use that id as the org that has full access to the platform and can modify the whilelists, settings, start jobs, etc
+
+## Q&A
+
+### Which service to use for sending the Emails?
+Cloudflare Email Service looks promising and we already have infra there.
+Google Cloud has no service of its own.
+Options: Google Workspace relay, AWS SES, SendGrid, Mailgun, Mailjet, Postmark.
 

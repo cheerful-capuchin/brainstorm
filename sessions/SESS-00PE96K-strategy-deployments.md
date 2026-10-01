@@ -499,3 +499,84 @@ Gaps left for the user: the `structure` CLI source is not in the workspace
 status still proposed; REF:strategy provenance row; pre-existing catalog
 failure on duplicate id DEC-0BRC4 (two files) blocks `just catalog` until
 fixed.
+
+### D20. Implementation answers while the plans ran (2026-10-01)
+
+Asked by the implementing agents, answered by the user, recorded in the
+DEC-0BZBC Revisit Trigger:
+- The subject child key is `strategy_deployment` on both sides; the Rust
+  `StrategyDeploymentSubject` key was renamed.
+- `idx_strategy_deployment_revisions_by_service` is dropped: a worker-pool
+  name cannot be indexed without normalizing it; the lookup parses the ids
+  out of the worker-pool id.
+- Workflows take a completion callback: the caller supplies a context, the
+  workflow engine calls back with the result and the context when the
+  workflow finishes (completed or failed). Strategy start and stop pass the
+  four ids and commit `failed` on the revision on failure.
+- Trading account feed: `StrategyAttached/Detached` become
+  `StrategyDeploymentAttached/Detached` carrying the strategy, strategy
+  revision, deployment and deployment revision ids.
+- Every reference to a deployment carries strategy id, strategy revision id
+  and deployment id, plus the deployment revision id when one applies. "A
+  deployment id without strategy id is useless." Topic addresses and
+  in-memory keys stay as they are; message payloads carry the ids.
+- The executor status update payload carries the four ids; it names whoever
+  requested the target position, and a running strategy ignores updates not
+  addressed to its own deployment revision.
+- The `structure` CLI no longer exists; its skills were removed and
+  PLAN-0BZEY T4 dropped.
+
+### D21. A revision exists only once the deployment is executed (2026-10-01)
+
+User: "if we don't start the deployment, the deployment revision is not
+created"; "store the info on the deployment as well". Create stores the
+deployment with its configuration and creates no revision. `:execute` merges
+overrides onto the deployment's configuration, saves it, inserts a revision
+snapshotting it and launches it. Revisions are never pending; `Superseded`
+and the supersede step are gone. An account is not reserved by creating a
+deployment, only by a revision that has not ended.
+
+### D22. Accounts are the deployment's `account_id` parameters (2026-10-01)
+
+Product owner: every trading account bound to a deployment is exclusive to
+it; another strategy that needs an account id in a data feed gets it through
+indirection. The server does not inspect target positions or evaluate the
+graph: the values of every `account_id` parameter (bound or literal) are the
+deployment's accounts. `trading_account_ids` is removed from the bodies and
+the stored configuration, and the deployment-level account connection table
+is dropped. "One account per venue" is explicitly not a rule. A strategy
+shows no status derived from its deployments ("a strategy has many
+deployments").
+
+### D23. No status on the deployment; `error` becomes `failed` (2026-10-02)
+
+User: the deployment status mixed "never ran" (`pending`) with run states
+and made the client invent `stopped` and `error`. The deployment has no
+`status` and no copied latest-revision status ("this is why we have
+connections and expansions"); a client that needs the run state requests the
+`latest_revision` expansion. A deployment that never ran has no latest
+revision. The revision status `error` is renamed `failed`. The list
+endpoint's `status` filter is dropped; "the client will filter whatever it
+needs". Server guards (archive, strategy-wide stop, execute, delete) read the
+revisions.
+
+### D24. Performance over account moves (2026-10-02)
+
+When an execute moves a deployment to other accounts, its performance values
+each revision's accounts over that revision's run, and the deployment's life
+joins them (option b).
+
+### D25. Deployment configuration is stored as a local, versioned protobuf (2026-10-02)
+
+User: the way configuration is stored differs from the way it is
+transmitted; no JSON, and no import of msg-schemas. Requirements: versioned,
+schema-backed and structured, supported by JS. Chosen: a protobuf message
+local to structure-web (`packages/api/src/strategies`), with its own storage
+types and generated TS, stored as one `strategy_config bytea` column on
+`strategy_deployments` and `strategy_deployment_revisions`, replacing
+`error_policy`, `logging_policy` and `strategy_variable_bindings`. The top
+message is a `oneof` of versions (`v1`); a change of shape is a new version
+with an upgrade function on read. Alternatives weighed: jsonb + zod
+(rejected: no JSON), Avro, MessagePack + zod, FlatBuffers. The revision's
+`strategy_spec_arguments` stays a separate column for now (assistant
+default, matches backtests and strategy revisions).

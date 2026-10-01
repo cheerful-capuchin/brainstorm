@@ -1,6 +1,6 @@
 ---
 create_time: 2026-10-01T10:56:23Z
-summary: "Email+OTP sign-in: email as Identifier type; whitelist by identifier in DB; RBAC model accepted: principal -> role_bindings -> static role->permission table -> route check -> ownership in domain; roles/permissions closed sets in iam-core; root principals in Pulumi-rendered config; app server issues API keys, Pulumi dynamic provider wanted; OTP, email provider open"
+summary: "Email+OTP sign-in: email as Identifier type; whitelist by identifier in DB; RBAC accepted: principal -> role_bindings -> static role->permission table -> route check -> ownership in domain; closed sets in iam-core; root principals in config; Pulumi plan: infra-deployer SA + dynamic provider (AccessPolicy, ApiKey), bindings in infra access.ts; OTP, email provider open"
 related_sessions: []
 ---
 
@@ -132,3 +132,42 @@ Staff and ownership:
 
 Audit: every mutation and every denial is an `argus.event` carrying the
 principal and the permission; `argus.event` must gain an actor field.
+
+## Pulumi plan for permissions and API keys (user asked to persist, 2026-10-01)
+
+Agreed as the plan for managing role bindings and API keys from the infra
+repo. Pieces, in dependency order:
+
+1. Application-server endpoints, internal, authenticated with a Google identity
+   token whose audience is the server URL (same check Cloud Tasks uses). The
+   principal is the service-account email in the token and must be listed in a
+   new `root_principals` config key rendered by Pulumi. Each call emits an
+   audit event with that principal.
+   - Access policy: one declarative endpoint that replaces the full set of role
+     bindings, guarded by an etag (GCP IAM setIamPolicy semantics).
+   - API keys: create (returns secret once), read, revoke by id.
+2. Deployer identity: service account `infra-deployer` in `infra/infra/iam.ts`;
+   staff in `GcpMembers` get `roles/iam.serviceAccountTokenCreator` on it;
+   stacks set `gcp:impersonateServiceAccount` so the GCP provider deploys as
+   the deployer; the deployer email is rendered into `root_principals`.
+   Impersonation is visible in the IAM audit logs already enabled.
+3. Dynamic provider in TypeScript in the infra repo with two resource types:
+   - `AccessPolicy` (inputs: bindings; output: etag; update in place).
+   - `ApiKey` (inputs: label, roles, expiry, rotation string; outputs: id,
+     secret as secret output; rotation string change replaces, create before
+     delete).
+   Mints identity tokens with the Google auth library impersonated client;
+   takes the server URL and discovery key from stack config / Secret Manager;
+   depends on the application-server Cloud Run service; minimal dependencies
+   because dynamic provider code is serialized into state. Stack state is
+   encrypted with the stack's KMS key.
+   A `@pulumi/command` wrapper around the structure CLI was considered as a
+   cheaper first step and rejected in favour of the dynamic provider (no diffs,
+   no secret outputs).
+4. Bindings as code: `infra/infra/access.ts` maps staff emails to roles and
+   declares one `AccessPolicy` per stack. `ApiKey` resources live beside the
+   consuming service and replace the shared backend key in Secret Manager.
+
+Rollout: ship sets/tables/endpoints -> deployer account + impersonation + root
+principal config -> provider + policy resource -> replace the shared
+`convex-backend-api-key` one service at a time, then delete it.

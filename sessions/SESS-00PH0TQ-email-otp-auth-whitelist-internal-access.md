@@ -237,3 +237,6 @@ principal config -> provider + policy resource -> replace the shared
   sending is opt-in behind a flag.
 - Open: email composition approach (plain HTML template with placeholders was
   recommended over JSX/React Email and MJML; the user asked, not yet chosen).
+- Update 2026-10-01: user accepted the plan and the plain HTML template with
+  `{{placeholders}}` and a strict renderer (JSX/React Email and MJML rejected
+  for a single email). Implementation delegated to an Opus subagent.

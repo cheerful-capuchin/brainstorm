@@ -1,6 +1,6 @@
 ---
 create_time: 2026-10-01T10:56:23Z
-summary: "Email+OTP sign-in: email as Identifier type; whitelist by identifier in DB; RBAC accepted: principal -> role_bindings -> static role->permission table -> route check -> ownership in domain; closed sets in iam-core; root principals in config; Pulumi plan: infra-deployer SA + dynamic provider (AccessPolicy, ApiKey), bindings in infra access.ts; OTP, email provider open"
+summary: "Email+OTP sign-in: email as Identifier type; deposits dropped for allowed_identifiers table; RBAC accepted: principal -> role_bindings -> static role->permission table -> route check -> ownership in domain; root principals in config; Pulumi infra-deployer + dynamic provider (AccessPolicy, ApiKey); OTP: own otp_challenges table, opaque server-HMAC challenge + code proof; email provider open"
 related_sessions: []
 ---
 
@@ -207,3 +207,17 @@ principal config -> provider + policy resource -> replace the shared
   same row (link approves the pending challenge after a click; the requesting
   client polls and exchanges the blob for tokens). OTP ships first. Not yet
   decided whether magic link is wanted at all.
+
+## Naming for the OTP flow (user accepted 2026-10-01)
+
+- The server-signed blob is called a **challenge**, the same term the wallet
+  flow uses (`SIWS.SignedChallenge`, request field `challenge`). "Ticket" was
+  considered and not used: the blob redeems nothing on its own.
+- What the client adds is the **proof**: a wallet signature in the SIWS flow,
+  the typed code in the email flow.
+- The shared signed-challenge type moves out of the SIWS module into the auth
+  domain (for example `Auth.SignedChallenge`), with the SIWS payload and the
+  OTP payload as the two payload kinds behind it.
+- Email verify request shape is `{ challenge, code }`, mirroring the existing
+  `{ challenge, signature }`. UI-facing values (expiry, masked destination) are
+  separate response fields, never read from the blob.

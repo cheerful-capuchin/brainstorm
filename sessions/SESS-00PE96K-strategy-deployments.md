@@ -580,3 +580,69 @@ with an upgrade function on read. Alternatives weighed: jsonb + zod
 (rejected: no JSON), Avro, MessagePack + zod, FlatBuffers. The revision's
 `strategy_spec_arguments` stays a separate column for now (assistant
 default, matches backtests and strategy revisions).
+
+### D26. App-database blobs are Avro single object encoding with a schema registry (2026-10-05)
+
+Supersedes the encoding part of D25: `strategy_config` is no longer a local
+protobuf with a `oneof v1` wrapper. D25's principle stands: storage types are
+separate from transmission types. The rule now covers every structured blob in
+the application database, not only `strategy_config`.
+
+- **Encoding.** Every structured blob is a `bytea` holding Avro single object
+  encoding: `C3 01`, the 8-byte little-endian CRC-64-AVRO fingerprint of the
+  writer schema's Parsing Canonical Form, then the Avro binary body. The
+  fingerprint is the schema revision; it changes exactly when the byte layout
+  changes (docs, aliases and defaults are not in the canonical form).
+- **No jsonb.** `strategy_revisions.variable_declarations`,
+  `backtests.strategy_variable_bindings` and `backtests.results_summary`
+  become Avro, and so does `kv.value`; unstructured debug request bodies go in
+  `RawRequestBody {content_type, body: bytes}`. This also replaces the jsonb
+  column of DEC-0BQ6R D43.
+- **Storage schemas** live in app-db, namespace `structure.app_db`.
+  Repositories no longer store messaging protobufs.
+- **Registry.** `avro_schemas` (`fingerprint` bytea PK, `full_name`, `schema`
+  as complete self-contained JSON, `create_time`). Append-only: triggers reject
+  UPDATE, DELETE and TRUNCATE; writes are `INSERT ... ON CONFLICT DO NOTHING`.
+  This guards against mistakes only: `stxr` owns the table and can disable the
+  trigger; a separate migrator role is out of scope. No foreign keys from blob
+  columns; the fingerprint lives only in the blob header. The api registers
+  every writer schema at startup; readers look up the writer schema by
+  fingerprint (cached, unknown ones loaded from the table) and resolve it
+  against the current reader schema.
+- **Evolution.** Additive changes through Avro resolution (new fields with
+  defaults, aliases for renames); union branches append-only; enums carry a
+  default symbol; a breaking change is a new named type plus an upgrade on
+  read. The `oneof v1` wrapper is dropped.
+- **Types.** u64 is `fixed(8)` big-endian `structure.app_db.U64`; i64 is
+  `long` (bigint in TS); protobuf oneofs become unions of named records;
+  Decimal is `{negative, magnitude: bytes, scale}`; a nullable value is a
+  `["null", X]` field inside the record, never a NULL column.
+- **Columns.** No SQL defaults on blob columns (the `'\x12020a00'` protobuf
+  defaults go). `strategy_revisions.node_mappings_object_ref` is dropped.
+  `strategy_templates.canonical_strategy_spec_object_ref` and
+  `backtests.artifacts` stay stored although derivable today, because the
+  bucket layout may change. ApiError details become a union of the modelled
+  detail types plus `UnknownErrorDetail {type_url, value: bytes}`.
+  `backtests.results_summary` becomes NOT NULL with an optional summary inside;
+  its `schema_version` goes. `hash_id` and `sha256` columns stay raw bytes.
+- **Rollout.** Hand-run backfill script in app-db: migrate, backfill, deploy
+  the api. Idempotent (skips values starting with `C3 01`), with a dry run. No
+  backwards compatibility.
+- **Tooling.** `avsc` 5.7.9; CRC-64-AVRO and the framing are our own code
+  (avsc only has MD5 and SHA-256 fingerprints). A DataGrip/RustRover extractor
+  (Groovy, app-db `tools/datagrip/`) decodes blobs with schemas exported by
+  `just export_avro_schemas` to `~/.stxr/avro-schemas/<fingerprint-hex>.avsc`;
+  copy, export and text view only, not grid cells. Searching inside blobs is
+  debugging only (group by `substring(col FROM 3 FOR 8)`, `position(pattern
+  IN col)` prefilter then decode on the client); anything production filters
+  on becomes a real column.
+- **Alternatives.** Protobuf (D25's choice): decodes without a schema, but has
+  no standard schema identity or registry, and IDE decoding needs descriptor
+  parsing. jsonb + zod: no JSON in storage. MessagePack + zod and FlatBuffers:
+  rejected earlier. A Postgres Avro extension: Cloud SQL is managed and
+  decoding happens on the client. Fixed byte offsets for indexed fields: ties
+  the schema layout to queries.
+
+Recorded as DEC-0C6J2 (accepted) and the new REF:application-db; DEC-0BZBC's
+storage owner answer points to DEC-0C6J2. Exact schema names and fingerprints
+are left to the implementation and maintained in code.

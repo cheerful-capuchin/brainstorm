@@ -1,3 +1,23 @@
+brainstorm/sessions/SESS-00PE96K-strategy-deployments.md
+Can we use the apache avro as a storage format for all the blobs in the database structure-web/packages/app-db/src/schema.ts
+Ideally, each avro schema is also stored in the database and it has a revision, which is either the avro format native
+identifier or some kind of our hash of the properties.
+
+Then, all the structured nested binary types are referencing the apache avro schema.
+I know that I can't use the apache avro extension in the postgres database,
+but I don't really need one.
+I only need it on the client side, without having to compromise the whole query or database efficiency.
+I use the rust rover database plugin or datagrip.
+
+Is it possible to have a plugin client-side that just transforms the bytes into the some kind of human-readable object
+and if I need to search for some property, I could do like a range query or something to pick out the specific bytes
+where the nested property eq something?
+
+
+
+---
+
+
 I want you to spawn workflows to implement the strategy deployments.
 You can orchestrate the worklfows how you see fit. The key is that the tasks are completed
 

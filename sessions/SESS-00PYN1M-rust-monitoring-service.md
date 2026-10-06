@@ -301,3 +301,15 @@ pass a cancellation token. Implemented `notify_gw::program::{Program, run,
 Shutdown, RunError}`; `Shutdown` is std-only (Mutex + Condvar); main owns
 config, logger, `static ENGINE_ALLOCATOR` and a signal thread that calls
 `shutdown.request()`.
+
+### D18. Multihost generator and nested Discord state (2026-10-06)
+
+The user: use the multihost generator; Discord-specific state becomes its
+own struct owned by the engine data (nesting). Implemented
+`NotifyGwComponent` + `#[derive(Multihost)] NotifyGwHost`, generated into
+`src/generated/engine/NotifyGwHost.rs` by build.rs; logic generic over
+`M: NotifyGwEgress`; `NotifyGwData.discord: DiscordData { webhook,
+paused_until, body_writer, body }`. The generator always derives serde and
+Debug on the unions, so serde was added to feed-ingress messages and an
+optional `serde` feature to ipc `stxr-http` / `stxr-http-client`. The
+derived Debug exposes the webhook URL (accepted risk per D2).

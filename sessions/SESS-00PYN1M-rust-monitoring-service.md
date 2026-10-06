@@ -247,3 +247,12 @@ The user asked to implement. Landed, uncommitted, all `just check` green in
 - Not done: Dockerfile, infra (`infra/infra/services/alert.ts` still deploys
   the TS service), Pub/Sub path never run against GCP, ipc migration to the
   official SDK.
+
+### D14. Local config lives in `<repo>/mnt/config/config.<service>.yaml` (2026-10-06)
+
+The user prefers `./mnt/config/config.{service}.yaml` over a per-crate
+`config/example.yaml` (copied from databento-mkt-data's justfile). notify-gw's
+config moved to `monitoring/mnt/config/config.notify-gw.yaml`; justfile,
+README and the config test follow it.
+
+dev-env: session `sess-00pyn1m` with notebook `notify-gw` explains the change.

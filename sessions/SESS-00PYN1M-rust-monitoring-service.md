@@ -326,3 +326,14 @@ request), which emits Created/Cancelled/Expired. Re-creating an id replaces
 its deadline (the old timer no longer fires). `CTX` no longer needs `Sync`;
 `dashmap` dependency dropped. Tests use tokio's paused clock instead of
 sleeps.
+
+### D20. FeedMsg carries a transport enum (2026-10-06)
+
+The user: `FeedMsg` needs a transport enum with transport-specific info (NATS
+headers, reply subject). Implemented in feed-ingress: `FeedMsg { route,
+payload, transport: FeedTransport }`, `FeedTransport::PubSub(PubSubDelivery
+{ ticket, message_id, publish_time_nanos, ordering_key, attributes })` /
+`Nats(NatsDelivery { subject, reply, headers })`; `MessageHeaders` sorted
+name/value pairs with `get`. The ack ticket moved into the Pub/Sub variant;
+`FeedMsg::ack_ticket()` gives `NotDurable` for NATS. Possible follow-up: use
+the `feed_subject` attribute in notify-gw instead of the `*` alerts subject.

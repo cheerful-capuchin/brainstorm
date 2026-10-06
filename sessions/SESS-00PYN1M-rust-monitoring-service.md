@@ -1,6 +1,6 @@
 ---
 create_time: 2026-10-06T15:01:08Z
-summary: "notify-gw (Rust engine app in stxr-prop/monitoring rust/crates) replaces TS alert-service; new feeds only; whole Discord URI in request; ack ticket sent when outcome final (noop for non-durable); startup-only health probe; telemetry Source in config; event-gw pool correlation ids; logger2 nats+stdout"
+summary: "notify-gw (Rust engine app, stxr-prop/monitoring rust/crates: notify-gw, feed-ingress, discord-webhook) replaces TS alert-service; new feeds only; official google-cloud-pubsub; fix ipc http-client; copy event-gw pool; whole Discord URI; ack ticket on final outcome; one-shot startup port in main; new NOTIFY_GW telemetry source"
 related_sessions:
   - SESS-00PYCE2
 ---
@@ -205,3 +205,17 @@ Copy the `InsertRequestPool` shape into notify-gw; no shared pool crate.
 - Startup check mechanics (D5): proposed host-decided readiness -> egress
   `StartupReady` -> one-shot TCP listener on 8080 that answers one probe and
   closes, with a deadline. Not yet accepted.
+
+## Decisions (2026-10-06, fourth round)
+
+### D12. Startup check lives in `main`
+Rejects the engine-driven `StartupReady` proposal. `main` opens port 8080
+(infra `WORKER_POOL_HEALTH_CHECK_PORT`), receives one connection, replies
+`ok`, and the check task ends (listener closed). No readiness signal from the
+feed sources. Refines D5.
+
+### D13. New telemetry source `NOTIFY_GW`
+Register a new `monitoring` source `NOTIFY_GW` in
+`telemetry/registry/sources.toml` (generated into telemetry Rust and TS).
+Rejects reusing `DISCORD_ALERT`; that entry is retired with the TS service.
+Not created yet (no code in this session).

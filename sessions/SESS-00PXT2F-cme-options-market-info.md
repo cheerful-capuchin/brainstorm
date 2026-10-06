@@ -1,5 +1,6 @@
 ---
 create_time: 2026-10-06T07:20:47Z
+title: "CME options in market info"
 summary: "Tick tables implemented (D13): computed TickTableId (tick_ prefix) + display_name + description, tick-tables/*.ron, tick = price, lot = qty; replaces price rules; Globex min_qty from tag 562; kind traits open"
 related_sessions: []
 ---

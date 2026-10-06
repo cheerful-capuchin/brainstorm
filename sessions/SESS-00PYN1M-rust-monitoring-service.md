@@ -1,6 +1,7 @@
 ---
 create_time: 2026-10-06T15:01:08Z
-summary: "notify-gw (Rust engine app, stxr-prop/monitoring rust/crates: notify-gw, feed-ingress, discord-webhook) replaces TS alert-service; new feeds only; official google-cloud-pubsub; fix ipc http-client; copy event-gw pool; whole Discord URI; ack ticket on final outcome; one-shot startup port in main; new NOTIFY_GW telemetry source"
+title: "Rust monitoring service replacing the TypeScript alert-service"
+summary: "notify-gw (Rust engine app, stxr-prop/monitoring) replaces TS alert-service; multihost component, StaticAllocator, Program/run in lib, FeedTransport, single-task timers, e2e via testcontainers; OPEN handoff: graceful drain (Draining state) so shutdown does not re-post in-flight alerts"
 related_sessions:
   - SESS-00PYCE2
 ---
@@ -354,3 +355,103 @@ Finding (open, not decided): shutdown races in-flight deliveries; the last
 delivery is consistently nacked at shutdown and redelivered on the next start
 (a deploy re-posts in-flight alerts). Proposed fix: a Draining FSM state
 before stopping the feed sources. Ack assertions wait on that.
+
+## Handoff: graceful drain on shutdown (2026-10-06, open)
+
+The user hands this task to a different agent. The problem below is measured;
+the design is the previous agent's proposal, NOT a user decision. Confirm the
+design with the user before building it. Nothing in this repo is committed.
+
+### Problem (measured)
+
+On shutdown, a delivery that is still in flight is nacked and redelivered on
+the next start, so Discord gets the alert twice. In production every deploy
+can re-post the alerts in flight at that moment.
+
+Evidence: `just e2e` (monitoring repo) ran with a temporary probe that pulled
+both subscriptions from the emulator after `program::run` returned. Three
+runs out of three, the subscription of the last delivered message still held
+1 message (`alerts=0 incidents=1`). The probe (`Emulator::pending`, a REST
+`POST /v1/{subscription}:pull` with `returnImmediately: true`) was removed
+again because the result is not deterministic yet.
+
+Why, in order:
+1. `program::run` (`notify-gw/src/program.rs`, `shutdown.wait()` then
+   `runtime::send_shutdown_msg(ingress_tx, ctl_tx)`) sends the control
+   Shutdown to the ingress producers and the engine Shutdown at the same time.
+2. The feed-ingress Pub/Sub source stops at once
+   (`feed-ingress/src/pubsub.rs`: `ShutdownBehavior::NackImmediately`,
+   `flush_on_stop` with `STOP_FLUSH_TIMEOUT` 10 s). It flushes acks already
+   requested and nacks every message still in `PubSubTickets`.
+3. The last Discord reply (`HttpClientResponse`) is still on its way back,
+   so the engine never emitted the `AckRequest` for it before step 2.
+
+### Proposed design (proposal, not decided)
+
+A second FSM state, `Draining`, in notify-gw:
+
+1. On `shutdown.request()`, `run` first sends the engine a drain message (a new
+   ingress type, e.g. `DrainRequest`), not the shutdown messages.
+2. The component transitions `Running -> Draining` through the logged
+   transition helper (this is the first real transition; the structure doc
+   `dev-docs/frameworks/engine-component-application-structure.md` describes
+   the `FSMState` trait and `transition_to` helper to add). In `Draining`:
+   - a new `FeedMsg` is nacked immediately (no new delivery starts);
+   - in-flight deliveries continue: responses and retry timers are handled as
+     in `Running`;
+   - when `deliveries.outstanding() == 0` (checked on entering `Draining` and
+     after every finished delivery) the component emits a `Drained` egress
+     message once.
+3. A small egress consumer in notify-gw turns `Drained` into a signal `run`
+   waits on (same shape as `program::Shutdown`).
+4. `run` waits for `Drained` or a drain timeout, whichever comes first, then
+   sends the existing shutdown messages and joins as today. The producers'
+   stop then flushes the acks already requested.
+5. The drain timeout is configuration (the user rejects arbitrary constants):
+   e.g. `delivery.drain_timeout_ms`. Cloud Run gives about 10 s between SIGTERM
+   and SIGKILL, and the Pub/Sub flush on stop needs time too, so the default
+   in `mnt/config/config.notify-gw.yaml` must leave room for both.
+6. Open choices for the user: whether retry timers that end after the drain
+   timeout are simply nacked (proposed: yes, Pub/Sub redelivers), and whether
+   `Draining` also stops the rate-limit hold from delaying the drain.
+
+Every `(message type, FSM state)` pair needs an explicit outcome (structure
+doc rule): FeedMsg, HttpClientResponse, delivery timer, DrainRequest in both
+`Running` and `Draining`.
+
+### Acceptance
+
+- `just e2e` asserts that after `program::run` returns, both subscriptions
+  hold 0 messages (re-add `Emulator::pending`), for runs where every delivery
+  finished within the drain timeout.
+- A second e2e case: the fake Discord holds a reply past the drain timeout;
+  after shutdown the message is pending again (redelivered, not lost).
+- Engine-level tests in `notify-gw/tests/delivery.rs` (harness
+  `tests/support/mod.rs`) for the dispatch matrix of `Draining`, including
+  `Drained` emitted exactly once and a FeedMsg nacked while draining.
+- `just check` and `just e2e` pass; clippy clean with `--features e2e`.
+
+### Where things are (monitoring repo, `rust/crates/`)
+
+- `notify-gw/src/program.rs` (`run`, `Shutdown` in `program/shutdown.rs`,
+  manager wiring in `program/managers.rs`).
+- `notify-gw/src/component.rs` (multihost component; subscriptions
+  `on_feed_msg`, `on_http_response`, `on_delivery_timer`; host generated into
+  `src/generated/engine/NotifyGwHost.rs` by `build.rs`).
+- `notify-gw/src/state.rs`, `state/running.rs` (FSM), `logic/delivery.rs`
+  (`start`, `settle`, `finish`), `logic/delivery_pool.rs` (`outstanding()`).
+- `notify-gw/src/messages.rs` (`NotifyGwEgress` bound the logic is generic
+  over; a new egress type means adding it there and to the component
+  `Output`).
+- `notify-gw/tests/e2e/` (`main.rs` scenario, `emulator.rs`,
+  `fake_discord.rs`).
+
+### Constraints that apply (from this session)
+
+- No allocation on the message path after `initialize`: the component's
+  `StaticAllocator` asserts on it in tests (D16).
+- No `dyn`; generics. Tests: table tests, property tests where it fits, no
+  sleeps for synchronisation (the e2e test waits on posts, timeouts only as
+  failure guards).
+- Every number is derived or configured, never a bare constant (D16).
+- Usage rustdoc on the crates is kept current; doctests run in `just check`.

@@ -1,5 +1,6 @@
 ---
 create_time: 2026-10-06T12:34:10Z
+title: "Databento download job: failures, empty day files, scheduling and alerting"
 summary: "databento-download-job: header-only empty day files; no-wait runs, */30 6-14 schedule, 1 task; alerts via Cloud Monitoring -> monitoring-incidents topic -> alert-service -> Discord; alert-service reads one subscription per feed+encoding (alerts feed, incidents feed, legacy alerts topic); dev-env: agent replies refresh window, one socket per instance (dev-env-<pid>.sock), CLI picks window showing the project"
 related_sessions:
   - SESS-00PVAZ2

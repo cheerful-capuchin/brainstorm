@@ -337,3 +337,20 @@ payload, transport: FeedTransport }`, `FeedTransport::PubSub(PubSubDelivery
 name/value pairs with `get`. The ack ticket moved into the Pub/Sub variant;
 `FeedMsg::ack_ticket()` gives `NotDurable` for NATS. Possible follow-up: use
 the `feed_subject` attribute in notify-gw instead of the `*` alerts subject.
+
+### D21. End-to-end test with testcontainers (2026-10-06)
+
+The user: use testcontainers for Docker. Implemented `notify-gw/tests/e2e`
+(feature `e2e`, `just e2e`): Pub/Sub emulator container
+(gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators, wait on stderr
+"Server started"), topics/subscriptions/publishing through the official SDK
+with an emulator endpoint and anonymous credentials, a fake Discord HTTP
+server with scripted replies, and the service in-process via `program::run`.
+Covers alerts + incidents delivered, 429 retried, malformed never posted,
+clean shutdown. feed-ingress gained `PubSubEndpoint::{Google, Emulator {
+host }}`; notify-gw config `gcp.pubsub_emulator_host`.
+
+Finding (open, not decided): shutdown races in-flight deliveries; the last
+delivery is consistently nacked at shutdown and redelivered on the next start
+(a deploy re-posts in-flight alerts). Proposed fix: a Draining FSM state
+before stopping the feed sources. Ack assertions wait on that.

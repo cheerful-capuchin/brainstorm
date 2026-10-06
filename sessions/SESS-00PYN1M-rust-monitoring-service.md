@@ -291,3 +291,13 @@ to follow TigerBeetle (`src/static_allocator.zig`, `config.zig`,
 Still open from dev-env annotations: run in lib.rs with injected state and a
 cancellation token from main's signal handler; multihost generator; Discord
 state living in NotifyGwData.
+
+### D17. `run` in the library, driven by a `Program` (2026-10-06)
+
+The user: move `run` into lib; a `Program` struct takes the allocator, the
+runtime config, the engine meta, "maybe some other shit in the future"; `run`
+takes the `Program`. Earlier annotation: signal listeners stay in `main` and
+pass a cancellation token. Implemented `notify_gw::program::{Program, run,
+Shutdown, RunError}`; `Shutdown` is std-only (Mutex + Condvar); main owns
+config, logger, `static ENGINE_ALLOCATOR` and a signal thread that calls
+`shutdown.request()`.

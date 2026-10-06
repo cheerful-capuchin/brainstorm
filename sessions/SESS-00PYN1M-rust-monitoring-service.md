@@ -256,3 +256,15 @@ config moved to `monitoring/mnt/config/config.notify-gw.yaml`; justfile,
 README and the config test follow it.
 
 dev-env: session `sess-00pyn1m` with notebook `notify-gw` explains the change.
+
+### D15. NATS config is a nested struct with a reconnect policy (2026-10-06)
+
+From a dev-env annotation: `nats: { url, reconnect }` replaces `nats_url`;
+url defaults to `nats://localhost:4222`; the user left the policy fields to
+the agent. Chosen: attempts_max 60, delay_initial_ms 250 doubling to
+delay_max_ms 8000, connect_timeout_ms 5000; all optional. Applied to
+feed-ingress NATS sources (`NatsReconnectPolicy`); logger2's
+NatsLogDispatcher only takes a URL, so the logger is not covered.
+
+Open: the user asked whether infra was updated. Answer: no; asked whether to
+do it and whether to run notify-gw beside alert-service or switch at once.

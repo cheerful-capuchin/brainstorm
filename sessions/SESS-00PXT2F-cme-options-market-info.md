@@ -1,6 +1,6 @@
 ---
 create_time: 2026-10-06T07:20:47Z
-summary: "No DatedMarketTrait; MarketInfoType to be replaced by kind traits (open); Globex min_qty from tag 562; PriceGrid + min_px_inc(px) and side-aware compute_valid_px done (D8); dated VTT tables next"
+summary: "Tick tables (D12): tick = price, lot = qty; TickTableId computed u64 + display_name + description replaces PriceRule (D11); Globex min_qty from tag 562; kind traits open"
 related_sessions: []
 ---
 
@@ -251,3 +251,94 @@ Follows D2-D5. The user chose "Steps 1 and 2" for the code update.
   `price::registry` tests expect the old MBTU6 contract id
   `cntr_89HQTP9GJKMWC`; realtime-gateway, logger2 tests, discord-webhook and
   notify-gw do not compile.
+
+### D9. Price steps come from a separate price rules catalog (2026-10-06)
+
+Replaces the per-market `PriceGrid` of D3 and the `price_grid()` /
+`min_px_inc(px)` market methods of D8. The user said `price_grid()` should
+not be public API, then asked to treat market info as pure data with no
+compute, then proposed "a reference into the lookup table", a newtype, with
+the table "populated differently from the market info". Accepted: "There is
+a separate source where the logic handles the price increments. It's not
+attached directly to market info."
+
+- Market info holds only `PriceRuleId` (newtype, e.g. `"cme-vtt-17"`,
+  `"hl-5sf-3dp"`, `"fixed-0.25"`). No venue-specific variants, no step logic
+  in market info.
+- A price rules catalog, filled separately (like trading schedules), holds a
+  band table per rule: sorted bands covering every price, each with a step
+  and which side owns its edge (CME: 20.00 in the lower band; Hyperliquid:
+  100 in the upper band). Fixed ticks are one-band rules. Hyperliquid's
+  5-figure rule becomes at most 9 tables (one per max decimals 0-8), written
+  by hl-market-list-gen; CME fixed rules from tag 969 by cme-market-info-gen;
+  CME VTT tables from the wiki / RDA.
+- `step_at(rule, px)` and side-aware rounding live with the rules catalog,
+  not on market info. The catalog build refuses unknown rule ids, gaps or
+  overlaps, and band edges that are not multiples of the steps on both sides.
+- Client summary: carry the rule id instead of `minimumPriceIncrement`
+  (proposed with this design; client side not yet decided in detail).
+- Open: where the rules catalog lives (module in the market-info crate like
+  `trading_schedule`, a separate crate, or a separate repo).
+
+### D10. Price rules catalog implemented (2026-10-06, not committed)
+
+Implements D9. The user: "no fucking JSON for storage" (RON only), "I like
+the idea, implement it". Replaces the D8 `PriceGrid` code.
+
+- market-info: `src/price_rule.rs` with `PriceRuleId`, `PriceBandEdge
+  { Below, Through, Unbounded }`, `PriceBand { up_to, step }`,
+  `PriceRuleRecord { id, bands }` (serde + rkyv, the file format) and
+  `PriceRuleRepository` (`try_new` validates, `step_at(id, px) ->
+  Option<Price>`). `MarketInfoTrait::price_rule() -> &PriceRuleId`;
+  `min_px_inc` removed. Globex params, Hyperliquid `try_new`, Drift configs
+  and mocks take a rule id.
+- No dated revisions yet: every rule has one version today; dated revisions
+  come with the CME VTT tables (D4 picks the version at build).
+- Store: `price-rules/<id>.ron`, `PriceRulePath`, catalog errors
+  (UnknownPriceRule, InvalidPriceRule, DuplicatePriceRuleId,
+  PriceRulePathMismatch), `MarketInfoFile.price_rules` in the archive; schema
+  hash 0xe67c_13b2_5976_c1f4.
+- Generators: cme-market-info-gen writes `fixed-<tick>` rules (14 files);
+  hl-market-list-gen writes `hl-5sf-<0..8>dp` tables from the formula.
+  Migrated 140 CME and 542 Hyperliquid market files.
+- strats_v2: `PriceRuleRepository` built from the archive in `rt_config.rs`,
+  held in Init/Ready state, passed to `compute_valid_px(px, side, mkt_info,
+  price_rules) -> Option<Price>`; an unknown rule logs
+  `target_executor.order.price_rule_not_found` and skips the place.
+- client-core summary: `priceRuleId` replaces `minimumPriceIncrement`;
+  stxr-client-app TS type, test fixture and generated skill reference updated.
+  Not done: `stxr-client-app/client/client_core.d.ts` needs a wasm rebuild
+  (`just build` in `client/`, which also force-adds build output).
+- Not done: CME VTT tables (with options work); a reviewed VTT source input,
+  if added, must be RON.
+
+### D11. Price rule id is a computed number, with a display name and description (2026-10-06)
+
+The user: "I would rather use a u32/u64 id and a display name", then "I need
+an id, display name, description for sure", "option one - computed".
+Reason given: a file like `fixed-0.0078125` (1/128, ZF Treasury notes) says
+nothing about what it is.
+
+- `PriceRuleId` becomes a numeric newtype (u64 proposed, prefixed text form
+  like `asst_` / `inst_`), computed by hashing the bands, so identical tables
+  share an id and two generators cannot collide. Changing a table yields a new
+  id; generators re-point their markets.
+- Every rule file carries `display_name` and `description`: generator
+  defaults, curated by people, preserved on regeneration, not hashed.
+- Rejected: ids assigned through a ledger (stable across edits, but needs
+  allocation and coordination between generators).
+- Not implemented yet.
+
+### D12. Naming: tick for price, lot for quantity; "tick table" (2026-10-06)
+
+The user: "then use tick", "tick is for prices, lot is for qty", and asked to
+add both to the knowledge-base glossary (done: REF:glossary, Lot and Tick).
+
+- Rename price rules to tick tables: `TickTableId`, `TickTableRecord`,
+  `TickRange { up_to, tick_size }`, files `tick-tables/<id>.ron`, market
+  field `tick_table`, lookup `tick_size_at`. "Band" is dropped: it reads as a
+  price limit (CME price banding, RDA `priceBand`). "Tick rule" is avoided:
+  it also names the US short-sale uptick rule and a trade-sign test.
+- Quantity steps keep lot naming (`min_qty_inc` is the lot size).
+- Combined with D11 (computed numeric id, display name, description).
+

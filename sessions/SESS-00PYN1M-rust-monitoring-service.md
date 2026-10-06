@@ -219,3 +219,31 @@ Register a new `monitoring` source `NOTIFY_GW` in
 `telemetry/registry/sources.toml` (generated into telemetry Rust and TS).
 Rejects reusing `DISCORD_ALERT`; that entry is retired with the TS service.
 Not created yet (no code in this session).
+
+## Implementation (2026-10-06, uncommitted)
+
+The user asked to implement. Landed, uncommitted, all `just check` green in
+`monitoring/`:
+
+- `monitoring/` (stxr-prop/monitoring clone): `justfile` (matrix copied from
+  the databento-mkt-data rust/crates layout), README, AGENTS.md, LICENSE,
+  `rust/crates/{discord-webhook,feed-ingress,notify-gw}`.
+- Root workspace: member `monitoring/rust/crates/*`; `.cargo/config.toml`
+  patches for the alerts codec and incidents codec crates.
+- telemetry: `monitoring/NOTIFY_GW` source `8KNEWFXX68PQ5` (D13).
+- ipc `stxr-http-client`: `ReqwestHttpClientConfig::new`, per-request
+  `timeout_ms` applied, timeout test (D8).
+- Official SDK pinned to `google-cloud-pubsub =0.33.2`: every 1.x needs tokio
+  >= 1.52, the workspace pins tokio =1.50.0 in 19 manifests. Lockfile pins
+  google-cloud-rpc/type 1.5.0 and wkt 1.4.0 so they use the vendored
+  serde_json. Moving to 1.x means bumping tokio everywhere (open).
+- Flow control is per subscription: `delivery.requests_max` is split evenly
+  between Pub/Sub subscriptions; config rejects `requests_max` below the
+  subscription count.
+- discord-webhook enforces Discord's 6000-character budget across the whole
+  message; with that budget one embed always suffices, so no `(cont.)` embeds.
+- Config feed source is internally tagged (`source: { type: pubsub, ... }`):
+  yaml_serde reads externally tagged enums only as YAML tags.
+- Not done: Dockerfile, infra (`infra/infra/services/alert.ts` still deploys
+  the TS service), Pub/Sub path never run against GCP, ipc migration to the
+  official SDK.

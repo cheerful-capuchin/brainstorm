@@ -1,5 +1,6 @@
 ---
 create_time: 2026-10-02T16:43:41Z
+title: "Rust services inside the TypeScript application server"
 summary: "Constraints for new app-server services in Rust (invites CRUD as the first case): schema stays in drizzle, queries go through the egress like PgClient.query; integration design open"
 related_sessions:
   - SESS-00PHDEJ

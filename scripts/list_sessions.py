@@ -2,8 +2,9 @@
 """Print one line per session record, newest first, for agents to scan.
 
 The front matter is the fixed shape written by `new_session.py`, so this reads
-it with a small line parser instead of a YAML dependency. A record that does
-not parse is still listed, with a warning on stderr.
+it with a small line parser instead of a YAML dependency. The title comes from
+the `title` field and falls back to the `# SESS-...: <Title>` heading. A record
+that does not parse is still listed, with a warning on stderr.
 """
 
 from __future__ import annotations
@@ -30,6 +31,15 @@ class Session:
     related: list[str]
 
 
+def strip_title_quotes(value: str) -> str:
+    """Read `title` the way the desktop app does: one pair of matching outer
+    quotes is removed and nothing inside is unescaped."""
+    trimmed = value.strip()
+    if len(trimmed) >= 2 and trimmed[0] == trimmed[-1] and trimmed[0] in "\"'":
+        return trimmed[1:-1]
+    return trimmed
+
+
 def unquote(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] == '"':
         try:
@@ -42,7 +52,7 @@ def unquote(value: str) -> str:
 
 
 def parse_front_matter(lines: list[str]) -> tuple[dict[str, str], list[str], int]:
-    """Return scalar fields, related session IDs, and the body start line."""
+    """Return raw scalar fields, related session IDs, and the body start line."""
     if not lines or lines[0].strip() != "---":
         raise ValueError("missing front matter")
 
@@ -61,8 +71,16 @@ def parse_front_matter(lines: list[str]) -> tuple[dict[str, str], list[str], int
             key, value = field.groups()
             current_list = key if value == "" else None
             if key != "related_sessions":
-                fields[key] = unquote(value)
+                fields[key] = value
     raise ValueError("unterminated front matter")
+
+
+def heading_title(body: list[str]) -> str:
+    for line in body:
+        heading = TITLE_PATTERN.match(line)
+        if heading:
+            return heading.group(1)
+    return ""
 
 
 def load_session(path: Path) -> Session:
@@ -70,18 +88,12 @@ def load_session(path: Path) -> Session:
     lines = path.read_text().splitlines()
     fields, related, body_start = parse_front_matter(lines)
 
-    title = ""
-    for line in lines[body_start:]:
-        heading = TITLE_PATTERN.match(line)
-        if heading:
-            title = heading.group(1)
-            break
-
+    title = strip_title_quotes(fields.get("title", "")) or heading_title(lines[body_start:])
     return Session(
         identifier=identifier,
         create_date=fields.get("create_time", "")[:10],
         title=title or path.stem,
-        summary=" ".join(fields.get("summary", "").split()),
+        summary=" ".join(unquote(fields.get("summary", "")).split()),
         related=related,
     )
 

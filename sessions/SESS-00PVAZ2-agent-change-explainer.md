@@ -1,5 +1,6 @@
 ---
 create_time: 2026-10-05T08:50:42Z
+title: "Agent change explainer"
 summary: "Change viewer: Tauri, Rust core, TS UI, comments as event log; agent explainer on top; session = SESS file only; paseo agent spawns a dev environment via heimdall (not built yet); no Clef, no video"
 related_sessions:
   - SESS-00PE96K

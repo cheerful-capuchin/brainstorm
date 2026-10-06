@@ -1,5 +1,6 @@
 ---
 create_time: 2026-10-01T14:31:46Z
+title: "Permissions, roles, IAM service, API keys, Pulumi and the organization model"
 summary: "Direction (unconfirmed): Platform->Organization->Project hierarchy with inherited role bindings replaces meta-org; staff bound at Platform node; module contract (node, permissions, audit, ports/events); per-module permission registry compiled to bitsets, only Role names persisted (supersedes SESS-00PH0TQ closed permission set); AccessScope all|within|none as SQL predicate; invitations replace whitelist; dev stack kept for platform-level tests"
 related_sessions:
   - SESS-00PH0TQ

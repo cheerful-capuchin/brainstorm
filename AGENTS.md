@@ -22,6 +22,8 @@ that decisions stay durable and traceable across conversations.
   earlier sessions. The command prints the new file path.
 - Never hand-write the ID, file name, or front matter; the script derives the ID
   from the current UTC second.
+- The script writes a `title` field into the front matter. The desktop app
+  requires it and shows it as the session name; never remove it.
 - The body below the title is free-form. Capture each decision, the reasoning
   the user gave, and the alternatives they rejected, in their own terms.
 - Keep adding to the same record for the rest of the conversation instead of

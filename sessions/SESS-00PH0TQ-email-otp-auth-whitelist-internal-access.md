@@ -1,5 +1,6 @@
 ---
 create_time: 2026-10-01T10:56:23Z
+title: "Email OTP sign-in, database whitelist, internal access"
 summary: "Email+OTP sign-in: email as Identifier type; deposits dropped for allowed_identifiers table; RBAC accepted: principal -> role_bindings -> static role->permission table -> route check -> ownership in domain; root principals in config; Pulumi infra-deployer + dynamic provider (AccessPolicy, ApiKey); OTP: own otp_challenges table, opaque server-HMAC challenge + code proof; email provider open"
 related_sessions: []
 ---

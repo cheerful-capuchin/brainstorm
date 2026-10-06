@@ -366,3 +366,95 @@ Implements D11 and D12, replacing the D10 price rules code.
   stxr-client-app `tickTableId`, test fixtures in trade, sim-gw,
   databento-mkt-data, backtest-post-processor.
 
+
+## Facts gathered: catalog size, ids and consumers (2026-10-07)
+
+- Checked-in `secdef.dat.gz` today: 1,077,901 lines (OOF 894,259, FUT
+  152,175, MLEG 31,406). User-defined (9779=Y): 166,523 OOF, all 31,406
+  MLEG, 1,493 FUT.
+- Listing rate estimated from the snapshot (active count / lifetime from
+  tag 865 events 5 and 7, lifetimes floored at 1 day): exchange-listed options
+  about 18k/day (6.5M/year), futures about 800/day; user-defined options about
+  118k/day and user-defined spreads about 31k/day (overestimates, most live a
+  day or less). 2010-2026 exchange-listed CME Group instruments: at most about
+  100M; with user-defined instruments, several hundred million.
+- Ids: XXH64, one seed per id kind, all 64 bits are hash output (the
+  venue/type tag is a hash input, not reserved bits). P(any collision) for n
+  ids is about n^2 / 2^65: 1e8 -> 0.03%, 1e9 -> 2.7%, 2e9 -> 10%, 50% at about
+  5.1e9. Reserving 8 bits for a tag would make 1e8 ids in one 56-bit space
+  about 6.7%.
+- Duplicate ids are already refused by the catalog build, the ledger guard,
+  both generators and the runtime repositories.
+- Widening ids: `DomainId` is a single u64, 24 proto files, ClickHouse
+  columns, warehouse paths and price subject keys carry the u64.
+- Every service loads the whole `market-info.rkyv` at startup into an
+  immutable fixed-capacity repository (event-gw and sim-gw cap 1024,
+  Databento server and download job 4096). The client bundles its own copy.
+  market-info-server is a NATS request/reply prototype with a linear filter
+  over the archive; nothing calls it.
+
+## Proposal presented: storage and serving at options scale (not accepted yet)
+
+- Ids: keep the computed u64. One registry enforces uniqueness on insert; a
+  collision stops ingestion and is fixed by an override entry in
+  market-info-core keyed by identity fields. No u128, no reserved tag bits.
+  Do not catalog user-defined instruments up front.
+- Storage: git RON keeps curated, low-volume records (assets, schedules, tick
+  tables, per-product option/future rules). Generated per-instrument records
+  (options, historical futures) live in a database owned by
+  market-info-server (Postgres: unique key on instrument id), with listing
+  windows and dated attribute revisions. Filled from Databento definitions,
+  daily and as a 2010+ backfill.
+- Serving: consumers stop loading the whole catalog. They fetch slices (venue,
+  product or underlying, as-of time or window) as rkyv archives in the
+  existing format, look up misses by id, and receive new listings as a change
+  feed. Backtests record the slice they ran on.
+
+## Proposal presented: log, folded revisions, live set (2026-10-07, not accepted yet)
+
+The user split the problem into a historical log and the state now, wants
+snapshots (not events) returned for queries like "all ES futures since 2010",
+keeps staff additions (display_name) as events, and weighed flat files,
+Postgres, DuckDB on ephemeral disk with RAM/SSD tiers, and RocksDB-like
+stores. Proposal:
+
+- The fold runs once per instrument at write time, not per query. Stored
+  shape: per-instrument revisions `[valid_from, valid_to)`; a new revision only
+  when a field changes. Daily 00:00 UTC definition snapshots repeat every
+  listed instrument and must be diffed away. A list query returns one revision
+  per instrument (at `as_of`, default its last).
+- Logs (source of truth): venue definitions from the historical data service;
+  staff overlay events (latest wins per instrument or product, history kept for
+  audit), merged at read, so no ordering between the two logs is needed.
+- Folded revisions: Parquet in GCS partitioned by venue/kind/product, written
+  by a fold job (compaction). History queries read one partition through
+  DuckDB inside market-info-server.
+- Hot/cold split by listing time, not popularity: markets listed now (about
+  1M rows, a few hundred MB) in RAM, booted from a checkpoint tagged with log
+  positions plus replay of the log tail. Expired markets stay cold in Parquet.
+- Rejected for now: rebuilding a DuckDB file from the raw log at boot (billions
+  of daily records); an embedded KV store (own indexes, checkpoint upload and
+  restore, compaction tuning, for a lookup rate history does not have).
+  Postgres stays the fallback if many writers or transactional edits appear.
+- Gaps found: the download job's daily `definition` object holds only the
+  wanted markets' records, not the whole venue; Cloud Run ephemeral disk is
+  documented in REF:cloud-run for jobs only (BETA, >= 10Gi).
+
+## Proposal presented: per-instrument change lists, packed per product (2026-10-07, not accepted yet)
+
+The user asked why not keep each instrument's few changes in one file and
+replay them on load. Answer given:
+
+- Agreed on the record shape: each instrument keeps its own short list of
+  changes, read by replaying them. Each change stores the full definition (a
+  Databento definition is full state), so reading at time t picks the last
+  change at or before t.
+- Rejected one GCS object per instrument: about 1M objects to fetch on every
+  boot of every replica (minutes, growing with listings); no append on GCS, so
+  each change rewrites an object; a day's changes to thousands of instruments
+  cannot land at once; queries across instruments need an index outside the
+  object names.
+- Proposed: pack the per-instrument lists by product, one file per
+  (venue, kind, product), instruments sorted inside. New days arrive as small
+  extra files per product and are merged periodically. Thousands of files
+  instead of millions; "ES futures since 2010" reads one file.

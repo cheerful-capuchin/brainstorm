@@ -455,3 +455,33 @@ doc rule): FeedMsg, HttpClientResponse, delivery timer, DrainRequest in both
   failure guards).
 - Every number is derived or configured, never a bare constant (D16).
 - Usage rustdoc on the crates is kept current; doctests run in `just check`.
+
+## Drain landed (2026-10-06, uncommitted)
+
+The user asked to fix the drain bug; built as the handoff proposed, with the
+open choices taken as proposed (a delivery still open at the drain timeout is
+nacked; the rate-limit hold still applies while draining).
+
+- FSM: `Running -> Draining` on `DrainRequest` through `state::transition_to`
+  (`FSMState` trait, logged). `Draining` nacks new FeedMsgs, handles responses
+  and timers like `Running`, emits `Drained` once (`logic/drain.rs`: on entry
+  when the pool is empty, else when the last delivery finishes).
+- `program::run`: on shutdown sends `DrainRequest`, waits for `Drained`
+  (egress consumer `program/drain.rs`, std sync_channel) or
+  `delivery.drain_timeout_ms` (new required config, 5000 in the yaml), then the
+  old shutdown messages.
+- Tests: Draining table test + property test (Drained exactly once, last,
+  after every ack) in `tests/delivery.rs`. e2e asserts 0 pending after
+  shutdown (fails 3/3 with the drain disabled, passes with it), and a second
+  case where Discord hangs past the drain: the next process delivers it.
+- Finding: a nacked message is sometimes (about 1 in 3 e2e runs) handed back
+  by Pub/Sub to the closing stream; the SDK drops it and it returns only after
+  the SDK's 60 s stream ack deadline. Late, not lost or duplicated; only when a
+  delivery outlives the drain timeout.
+- Manual run: user rejected a setup script ("I'll manage the infra through
+  pulumi"). Kept `examples/publish_alert.rs` (`just publish-alert`, real
+  attributes on the feeds topic). infra: `notify-gw-alerts-feed-sub` (feeds,
+  alerts filter) in event-bus.ts and `notify-gw-monitoring-incidents-sub` in
+  monitoring.ts, both never-expiring, with cloudRunAccount subscriber IAM.
+  Local `just run` needs a NATS server; without one only NATS connect errors
+  reach stdout.

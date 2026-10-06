@@ -59,6 +59,20 @@ def normalize_title(title: str) -> str:
     return normalized
 
 
+def quote_title(title: str) -> str:
+    """Quote a title for the `title:` front matter field.
+
+    The desktop app reads the field by trimming the value and stripping one pair
+    of matching surrounding quotes, with no escape processing. A title round-trips
+    only if it does not contain the quote character wrapped around it.
+    """
+    if '"' not in title:
+        return f'"{title}"'
+    if "'" not in title:
+        return f"'{title}'"
+    raise ValueError("title must not contain both \" and ' characters")
+
+
 def validate_slug(slug: str) -> str:
     if not SLUG_PATTERN.fullmatch(slug):
         raise ValueError(f"slug must be lowercase kebab-case (a-z, 0-9, '-'): {slug!r}")
@@ -80,7 +94,8 @@ def render_session(identifier: str, title: str, moment: datetime, related: list[
     else:
         related_block = "related_sessions: []\n"
     return (
-        f"---\ncreate_time: {create_time}\nsummary: \"\"\n{related_block}---\n\n"
+        f"---\ncreate_time: {create_time}\ntitle: {quote_title(title)}\n"
+        f"summary: \"\"\n{related_block}---\n\n"
         f"# {identifier}: {title}\n"
     )
 
@@ -94,6 +109,8 @@ def create_session(
 ) -> Path:
     when = moment or datetime.now(UTC)
     identifier = session_id(when)
+    # Render before touching the disk so a rejected title leaves no empty file.
+    content = render_session(identifier, title, when, related)
 
     collisions = list(directory.glob(f"{identifier}-*.md"))
     if collisions:
@@ -102,7 +119,7 @@ def create_session(
     directory.mkdir(exist_ok=True)
     session_path = directory / f"{identifier}-{slug}.md"
     with session_path.open("x") as session_file:
-        session_file.write(render_session(identifier, title, when, related))
+        session_file.write(content)
     return session_path
 
 

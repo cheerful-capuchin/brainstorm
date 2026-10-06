@@ -179,3 +179,29 @@ engine channels" part of P6).
 - HTTP client: fix `ipc/crates/http-client` or new crate. The user asked
   which timeout; answer given: `HttpClientRequest.timeout_ms` is never read.
 - FeedMsg `route` proposal: u16 index into the startup binding table.
+
+## Decisions (2026-10-06, third round)
+
+### D8. HTTP egress: fix `ipc/crates/http-client`
+No new HTTP crate. Fix the existing one (public constructor for the reqwest
+config, apply `HttpClientRequest.timeout_ms` per request).
+
+### D9. Crate split accepted (P2)
+`monitoring/rust/crates/`: `notify-gw` (engine app), `feed-ingress` (Feed
+Ingress Producer with `pubsub` and `nats` modules), `discord-webhook` (pure
+build and classify functions, no I/O).
+
+### D10. Official `google-cloud-pubsub` SDK (P3)
+Use Google's official crate in the `feed-ingress` Pub/Sub module. The user
+notes it does not expose the request-builder style they prefer, and accepts
+that rather than spend time on it. `ipc` migration not part of this work.
+
+### D11. Copy the event-gw request pool (rejects P9)
+Copy the `InsertRequestPool` shape into notify-gw; no shared pool crate.
+
+### Open
+- Telemetry source id: reuse `monitoring/DISCORD_ALERT` (`5VCQ2VF7C44P2`) or
+  register a new `NOTIFY_GW` source. User asked what it is; explained.
+- Startup check mechanics (D5): proposed host-decided readiness -> egress
+  `StartupReady` -> one-shot TCP listener on 8080 that answers one probe and
+  closes, with a deadline. Not yet accepted.

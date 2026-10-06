@@ -1,6 +1,6 @@
 ---
 create_time: 2026-10-06T07:20:47Z
-summary: "Tick tables (D12): tick = price, lot = qty; TickTableId computed u64 + display_name + description replaces PriceRule (D11); Globex min_qty from tag 562; kind traits open"
+summary: "Tick tables implemented (D13): computed TickTableId (tick_ prefix) + display_name + description, tick-tables/*.ron, tick = price, lot = qty; replaces price rules; Globex min_qty from tag 562; kind traits open"
 related_sessions: []
 ---
 
@@ -341,4 +341,27 @@ add both to the knowledge-base glossary (done: REF:glossary, Lot and Tick).
   it also names the US short-sale uptick rule and a trade-sign test.
 - Quantity steps keep lot naming (`min_qty_inc` is the lot size).
 - Combined with D11 (computed numeric id, display name, description).
+
+### D13. Tick tables implemented (2026-10-06, not committed)
+
+Implements D11 and D12, replacing the D10 price rules code.
+
+- market-info `src/tick_table.rs`: `TickTableId(u64)` via the `DomainId`
+  derive (prefix `tick`), computed by `TickTableId::of(ranges)` with
+  `IdHasher` seed `0x7449_434B_5441_424C`; range end tags Below=1, Through=2,
+  Unbounded=3 are hash inputs; prices hashed as normalized decimal text.
+  `TickTableRecord { id, display_name, description, ranges }`,
+  `TickRange { up_to: TickRangeEnd, tick_size }`, `TickTableRecord::fixed`.
+  `TickTableRepository::tick_size_at(id, px)`; validation also checks the
+  declared id equals the computed id and that both names are non-empty.
+  `MarketInfoTrait::tick_table() -> TickTableId`.
+- Store: `tick-tables/<id>.ron`, file stem is the id text; archive field
+  `tick_tables`; schema hash 0x6e34_4d01_c048_2b63.
+- Generators keep curated display names and descriptions of existing tables.
+  CME: one fixed-tick table per tick (14). Hyperliquid: one table per decimal
+  limit 0-8 (9). 682 market files point at the computed ids.
+- Consumers renamed: strats_v2 (`TickTableRepository`, event
+  `target_executor.order.tick_table_not_found`), client-core and
+  stxr-client-app `tickTableId`, test fixtures in trade, sim-gw,
+  databento-mkt-data, backtest-post-processor.
 

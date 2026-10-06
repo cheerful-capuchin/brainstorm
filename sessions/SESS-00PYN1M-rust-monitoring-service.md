@@ -268,3 +268,26 @@ NatsLogDispatcher only takes a URL, so the logger is not covered.
 
 Open: the user asked whether infra was updated. Answer: no; asked whether to
 do it and whether to run notify-gw beside alert-service or switch at once.
+
+### D16. TigerBeetle-style memory: derived sizes, StaticAllocator (2026-10-06)
+
+The user rejected arbitrary size constants ("random ass constants") and asked
+to follow TigerBeetle (`src/static_allocator.zig`, `config.zig`,
+`constants.zig`). Implemented:
+- discord-webhook: scratch sizes derived from Discord limits with const
+  asserts (tags: (FIELD_VALUE_LIMIT + 2) * 3 + ellipsis; properties:
+  (MESSAGE_TEXT_BUDGET + 2) * 3 + ellipsis); `ExecuteWebhookWriter<A>` with
+  `new_in(alloc)` and `write` into `allocator_api2::vec::Vec<u8, B>`.
+- notify-gw: `StaticAllocator<A>` (Init -> Static -> Deinit, allocator-api2
+  0.2.21, already in the lockfile via hashbrown); `static ENGINE_ALLOCATOR`
+  in main passed to `run` and `init::load_params`; pool, body and writer
+  scratch come from it; `initialize` switches to Static, `shutdown` to
+  Deinit. Delivery tests run after `initialize`, so any allocation from it on
+  the message path fails them.
+- Payload limits moved from constants to `feeds[].payload_bytes_max`.
+- Answered: RUSTC_BOOTSTRAP=<crate names> scopes nightly gates per crate
+  (tested; cargo [env] works, build scripts refused). Not used.
+
+Still open from dev-env annotations: run in lib.rs with injected state and a
+cancellation token from main's signal handler; multihost generator; Discord
+state living in NotifyGwData.

@@ -1,6 +1,6 @@
 ---
 create_time: 2026-10-06T15:01:08Z
-summary: "Rust engine service in stxr-prop/monitoring rust/crates replaces TS alert-service; Feed Ingress Producer (feed->source map, pubsub/nats modules); pure-data requests over generic Io; event-gw pool correlation ids; Running FSM; logger2 nats+stdout; no alloc after init; Q1-Q3 answered, P1-P9 proposals open"
+summary: "notify-gw (Rust engine app in stxr-prop/monitoring rust/crates) replaces TS alert-service; new feeds only; whole Discord URI in request; ack ticket sent when outcome final (noop for non-durable); startup-only health probe; telemetry Source in config; event-gw pool correlation ids; logger2 nats+stdout"
 related_sessions:
   - SESS-00PYCE2
 ---
@@ -137,3 +137,45 @@ no Rust code yet.
 - P8 drop the `/health` and `/ping` HTTP server (Cloud Run WorkerPool).
 - P9 extract event-gw `InsertRequestPool` into a shared generic pool crate
   (second user).
+
+## Decisions (2026-10-06, second round)
+
+### D1. Name: `notify-gw`
+Accepted P1. Main crate `monitoring/rust/crates/notify-gw`.
+
+### D2. Discord webhook URI travels whole in the HTTP request
+Rejects P4 (EndpointId + consumer-side secret table). The user: "this sucks,
+I'll just pass the whole uri, don't want to deal with that". The webhook URL
+is a `Secret` in config and the logic puts the full URI into the request.
+Consequence (not a decision): requests must not be Debug-logged.
+
+### D3. Ack only when the outcome is final
+Accepted P5: ack after 2xx, permanent failure, or attempts exhausted; pool
+full -> nack for redelivery; Pub/Sub flow control max outstanding = pool
+capacity. The ack is a ticket the logic always sends; sources that are not
+durable streams (core NATS) treat it as a no-op.
+
+### D4. Only the new feeds
+Rejects reading the legacy `alerts` topic. notify-gw reads the alerts feed and
+the Cloud Monitoring incidents feed only (SESS-00PYCE2 D9 feeds).
+
+### D5. Startup check only
+Cloud Run worker pools need a startup probe (infra
+`lib/worker-pool-health.ts`, TCP on 8080). The check is needed only at
+startup; afterwards it is removed so it does not waste resources. No `/ping`.
+
+### D6. Telemetry source in config
+Config takes the telemetry `Source` object; it is needed for logging
+(logger2 engine meta, log source).
+
+### D7. Allocation: best effort
+The user believes bounded channels cannot be passed to the engine and accepts
+that; static allocation is kept wherever possible (supersedes the "bounded
+engine channels" part of P6).
+
+### Still open
+- P2 crate split, P3 official Pub/Sub crate, P9 shared pool crate: not
+  answered.
+- HTTP client: fix `ipc/crates/http-client` or new crate. The user asked
+  which timeout; answer given: `HttpClientRequest.timeout_ms` is never read.
+- FeedMsg `route` proposal: u16 index into the startup binding table.

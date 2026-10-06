@@ -313,3 +313,16 @@ paused_until, body_writer, body }`. The generator always derives serde and
 Debug on the unions, so serde was added to feed-ingress messages and an
 optional `serde` feature to ipc `stxr-http` / `stxr-http-client`. The
 derived Debug exposes the webhook URL (accepted risk per D2).
+
+### D19. One timer task with a heap (2026-10-06)
+
+The user asked to stop `ingress-egress/src/timer/consumer.rs` from spawning
+a Send + Sync tokio task per timer: one task total, a heap of timers.
+Implemented in ingress-egress (uncommitted): `timer/heap.rs` (`TimerHeap`:
+BinaryHeap of deadlines + map of live timers, lazy deletion by generation)
+and a consumer whose `handle_msg` only forwards requests over an unbounded
+channel to one local worker task (`spawn_local`, started on the first
+request), which emits Created/Cancelled/Expired. Re-creating an id replaces
+its deadline (the old timer no longer fires). `CTX` no longer needs `Sync`;
+`dashmap` dependency dropped. Tests use tokio's paused clock instead of
+sleeps.

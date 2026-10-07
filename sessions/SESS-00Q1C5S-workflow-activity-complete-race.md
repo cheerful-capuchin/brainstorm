@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-07T15:48:09Z
 title: "Workflow activity completion race and the backtest download stream branch"
-summary: "activities:complete 500 'Running activity poll_execution not found' spammed Discord: tick created the activity task before addRunningActivity; fix marks running first (new Convex removeRunningActivity rollback) and complete acks a not-running activity; structure-web branch backtest-download-stream off origin/main also carries the streamed results download; depends on uncommitted gcp requestStream; not pushed; the six backtests finished 15:38-15:46 and the alerts stopped; internal endpoints adopt the caller x-trace-id after auth (f30f2dbd2); one trace id per workflow stored in Convex, inherited by children, sent on ticks/activities/callbacks (3088cdd0a); activities-api logs via argus; ISS-0BWVR resolution 1 (per-version tick names, stored-value version increments, dispatched flag, stale tick recovery) in 2b9c39550, backtest watchdog endpoint 0bd51a2a7 + infra scheduler 06dbe2e (branch backtest-watchdog); dev-env notebook activity-complete-race"
+summary: "activities:complete 500 'Running activity poll_execution not found' spammed Discord: tick created the activity task before addRunningActivity; fix marks running first (new Convex removeRunningActivity rollback) and complete acks a not-running activity; structure-web branch backtest-download-stream off origin/main also carries the streamed results download; depends on uncommitted gcp requestStream; not pushed; the six backtests finished 15:38-15:46 and the alerts stopped; internal endpoints adopt the caller x-trace-id after auth (f30f2dbd2); one trace id per workflow stored in Convex, inherited by children, sent on ticks/activities/callbacks (3088cdd0a); activities-api logs via argus; ISS-0BWVR resolution 1 (per-version tick names, stored-value version increments, dispatched flag, stale tick recovery) in 2b9c39550, backtest watchdog endpoint 0bd51a2a7 + infra scheduler 06dbe2e (branch backtest-watchdog); OIDC allowlist 542c487ef + infra b664de5; dev-env notebook activity-complete-race"
 related_sessions:
   - SESS-00PYCE2
   - SESS-00PE96K
@@ -275,6 +275,28 @@ update, late completion turns failed into completed.
 
 Still open: resolution 3 (14 old pending backtests; the watchdog only fails
 running ones).
+
+### D9. OIDC allowlist for internal endpoints (2026-10-07)
+
+`validateOidcToken` (gcp/ts/gcp/src/auth/mod.ts) verifies Google's RS256
+signature, issuer, audience and expiry, but nothing checked the caller's
+identity: Google signs an ID token for any audience, for any service
+account in any project. The user: "Yeah, add an allow list which you take
+from the config."
+
+- structure-web `542c487ef`: required config
+  `internal_oidc_allowed_service_accounts` (array of emails, min 1) ->
+  `internalOidcAllowedEmails`; `GcpCredentialRequired(aud, allowedEmails)`
+  requires `email_verified: true` and an allowed `email`
+  (`allowedGcpIdentity`, table-tested, 6 cases); refused identities logged
+  as `api.gcp_credential.identity_not_allowed` (security tag). Local
+  `mnt/config/application-server.config.yaml` updated. Affects the 7
+  routes using GcpCredentialRequired.
+- infra `b664de5` (branch `backtest-watchdog`): config lists the backend
+  account (signs the server's own Cloud Tasks: ticks, Solana poll) and the
+  watchdog scheduler account. No other OIDC callers found in infra.
+- The server refuses to start without the list: ship the config with the
+  server that reads it (infra pins the server image).
 
 ## Verification
 

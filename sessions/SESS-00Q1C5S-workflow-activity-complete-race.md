@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-07T15:48:09Z
 title: "Workflow activity completion race and the backtest download stream branch"
-summary: "activities:complete 500 'Running activity poll_execution not found' spammed Discord: tick created the activity task before addRunningActivity; fix marks running first (new Convex removeRunningActivity rollback) and complete acks a not-running activity; structure-web branch backtest-download-stream off origin/main also carries the streamed results download; depends on uncommitted gcp requestStream; not pushed; the six backtests finished 15:38-15:46 and the alerts stopped; internal endpoints adopt the caller x-trace-id after auth (f30f2dbd2); one trace id per workflow stored in Convex, inherited by children, sent on ticks/activities/callbacks (3088cdd0a); activities-api logs via argus; dev-env notebook activity-complete-race"
+summary: "activities:complete 500 'Running activity poll_execution not found' spammed Discord: tick created the activity task before addRunningActivity; fix marks running first (new Convex removeRunningActivity rollback) and complete acks a not-running activity; structure-web branch backtest-download-stream off origin/main also carries the streamed results download; depends on uncommitted gcp requestStream; not pushed; the six backtests finished 15:38-15:46 and the alerts stopped; internal endpoints adopt the caller x-trace-id after auth (f30f2dbd2); one trace id per workflow stored in Convex, inherited by children, sent on ticks/activities/callbacks (3088cdd0a); activities-api logs via argus; ISS-0BWVR resolution 1 (per-version tick names, stored-value version increments, dispatched flag, stale tick recovery) in 2b9c39550, watchdog not done; dev-env notebook activity-complete-race"
 related_sessions:
   - SESS-00PYCE2
   - SESS-00PE96K
@@ -191,6 +191,53 @@ activities-api, not simple logger". Commit `3088cdd0a`:
 Not changed: `activities:fail` still answers NotFound / FailedPrecondition
 for a missing activity or attempt mismatch, which alerts and is retried.
 
+### D7. ISS-0BWVR resolution 1: a workflow does not lose its next tick (2026-10-07)
+
+The user asked whether this related to ISS-0BWVR (workflows can stall and
+leave backtests running). Today's incident was not a stall, but the RUN
+change in D3 added a new case of the issue's section 1 bug (version bump,
+then failure, retry dropped as stale). The user said "yeah, fix the issue".
+Done: expected resolution 1 only. Commit `2b9c39550`:
+
+- Mutations increment `tickVersion` from the stored value and return it
+  (no `tickVersion` argument any more); ticks are queued at the returned
+  version.
+- Tick task names `tick-<wf>-v<version>` (one per version; ALREADY_EXISTS =
+  success), deferred ticks `tick-<wf>-v<version>-at-<runTime>`.
+- `verifyWorkflowState`: one version ahead -> `ensureCurrentTick` (queue the
+  current version's tick unless a dispatched activity is running); a
+  finished workflow answers 200 instead of FailedPrecondition.
+- Running activities carry `dispatched` (Convex `v.optional`, missing =
+  dispatched). RUN/RUN_CHILD: addRunningActivity(dispatched false) ->
+  create task -> `markActivityDispatched`. `removeRunningActivity` from D3
+  replaced. The reducer sees only dispatched activities.
+  `activityFailedWithRetry` sets dispatched false.
+- Callbacks for an activity not running or another attempt: ensure the
+  current tick, answer 200 (complete and fail).
+- COMPLETE/FAIL: parent notify, backtest failRun and revision status before
+  the workflow is marked finished.
+- Found during the fix, not in the issue: `activityFailedWithRetry` keeps
+  the next attempt as running (hence the dispatched flag); non-atomic
+  versions could give two writers the same version (hence stored-value
+  increments, needed for per-version task names); a child marked completed
+  before its parent's tick was queued stalled the parent.
+- Test `packages/api/src/workflows/workflow-engine.test.ts`: real Convex
+  mutation handlers (`_handler`) over an in-memory db, fake Cloud Tasks
+  (409 on duplicate name, 5 s retry, 15 attempts), `setSystemTime` clock,
+  scripted worker. Runs a StrategyBuild once per task creation with that
+  one failing; asserts completed, exact activity run counts and one trace
+  id. Fails with the recovery or the callback tick check disabled.
+- `docs/domains/workflow/workflow-design.md` sections 6-7 rewritten.
+
+Not done: resolution 2 (backtest watchdog: scheduler job + endpoint, limit
+and late completion to decide) and 3 (the 14 old pending backtests). The
+issue record was not edited.
+
+Local verification needed a strategy-core worktree at origin/main linked
+into `packages/api/node_modules/@structure/strategy-core` (restored after);
+`backtests-run-lifecycle.test.ts` fails identically with and without the
+change in this environment.
+
 ## Verification
 
 - `just typecheck` in `packages/api` stops at pnpm's dependency check
@@ -206,8 +253,8 @@ for a missing activity or attempt mismatch, which alerts and is retried.
 
 - Push `backtest-download-stream`; commit and push the `gcp` streaming
   helpers. The user has not decided.
-- Deploy order: `just convex_prod` (new `removeRunningActivity`, optional
-  `traceId` field) before the application-server; deploy the activity worker
+- Deploy order: `just convex_prod` (new `markActivityDispatched`, mutations
+  without `tickVersion` args, optional `traceId` and `dispatched` fields) before the application-server; deploy the activity worker
   with it.
 - Code not formatted (structure-web rule: formatting is a human task before
   the PR); `just check` will flag `activities-api.ts` until `just fmt api`.

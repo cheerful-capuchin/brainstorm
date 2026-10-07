@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-07T15:48:09Z
 title: "Workflow activity completion race and the backtest download stream branch"
-summary: "activities:complete 500 'Running activity poll_execution not found' spammed Discord: tick created the activity task before addRunningActivity; fix marks running first (new Convex removeRunningActivity rollback) and complete acks a not-running activity; structure-web branch backtest-download-stream off origin/main also carries the streamed results download; depends on uncommitted gcp requestStream; not pushed; the six backtests finished 15:38-15:46 and the alerts stopped; internal endpoints adopt the caller x-trace-id after auth (f30f2dbd2); one trace id per workflow stored in Convex, inherited by children, sent on ticks/activities/callbacks (3088cdd0a); activities-api logs via argus; ISS-0BWVR resolution 1 (per-version tick names, stored-value version increments, dispatched flag, stale tick recovery) in 2b9c39550, watchdog not done; dev-env notebook activity-complete-race"
+summary: "activities:complete 500 'Running activity poll_execution not found' spammed Discord: tick created the activity task before addRunningActivity; fix marks running first (new Convex removeRunningActivity rollback) and complete acks a not-running activity; structure-web branch backtest-download-stream off origin/main also carries the streamed results download; depends on uncommitted gcp requestStream; not pushed; the six backtests finished 15:38-15:46 and the alerts stopped; internal endpoints adopt the caller x-trace-id after auth (f30f2dbd2); one trace id per workflow stored in Convex, inherited by children, sent on ticks/activities/callbacks (3088cdd0a); activities-api logs via argus; ISS-0BWVR resolution 1 (per-version tick names, stored-value version increments, dispatched flag, stale tick recovery) in 2b9c39550, backtest watchdog endpoint 0bd51a2a7 + infra scheduler 06dbe2e (branch backtest-watchdog); dev-env notebook activity-complete-race"
 related_sessions:
   - SESS-00PYCE2
   - SESS-00PE96K
@@ -237,6 +237,44 @@ Local verification needed a strategy-core worktree at origin/main linked
 into `packages/api/node_modules/@structure/strategy-core` (restored after);
 `backtests-run-lifecycle.test.ts` fails identically with and without the
 change in this environment.
+
+### D8. Backtest watchdog, ISS-0BWVR resolution 2 (2026-10-07)
+
+The user: "You can create the backtest watchdog -> is it an infra change?"
+Both. Issue defaults used, not confirmed by the user: 3 hours without an
+update, late completion turns failed into completed.
+
+- structure-web `0bd51a2a7` on `backtest-download-stream`: internal
+  `POST /api/v0/backtests:fail_stalled_runs` (RFC custom method naming),
+  auth Google OIDC (backend origin audience) or internal API key, plus the
+  discovery key. `BacktestService.failStalledRuns`: `STALLED_RUN_AFTER` =
+  3 h (asserted above the job timeout), at most 100 per call (`has_more`),
+  `BacktestRepository.listStalledRuns` (status running, update_time before
+  the cutoff, oldest first). `failRun` takes `updatedBefore`, checked under
+  the row lock, and now returns whether it failed the backtest. Every
+  poll_execution commit refreshes update_time, so 3 h without one means no
+  poll.
+- Tests in `backtests-run-lifecycle.test.ts`: table (past limit -> failed,
+  within limit -> running, old completed -> completed) and late completion
+  (commit Stopped after the watchdog -> completed). 7/7 pass.
+- infra `06dbe2e` on new branch `backtest-watchdog` (worktree
+  `tmp/infra-watchdog` off origin/main; infra main has uncommitted work):
+  `backtestWatchdogSchedulerAccount` (no roles) in `iam.ts`,
+  `infra/services/application-server/backtest-watchdog.ts` (Cloud Scheduler
+  `*/10 * * * *`, POST `<public origin>/api/v0/backtests:fail_stalled_runs`,
+  OIDC audience = public origin, header `x-discovery-key` from
+  `convexApiDiscoveryKey`, no retries, paused with killTraffic), loaded after
+  application-server in `pulumi.config.ts`. tsc clean; no `pulumi preview`.
+- Local DB tests run only with strategy-core AND messaging worktrees at
+  origin/main linked into structure-web packages (messaging worktree needs
+  its own node_modules of absolute links with strategy-core pointed at
+  main). Restored afterwards.
+- Observation, not changed: `GcpCredentialRequired` checks only the token
+  audience, so for internal endpoints the discovery key is the only secret
+  against any Google-signed token.
+
+Still open: resolution 3 (14 old pending backtests; the watchdog only fails
+running ones).
 
 ## Verification
 

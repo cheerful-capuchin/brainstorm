@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-07T15:48:09Z
 title: "Workflow activity completion race and the backtest download stream branch"
-summary: "activities:complete 500 'Running activity poll_execution not found' spammed Discord: tick created the activity task before addRunningActivity; fix marks running first (new Convex removeRunningActivity rollback) and complete acks a not-running activity; structure-web branch backtest-download-stream off origin/main also carries the streamed results download; depends on uncommitted gcp requestStream; not pushed; the six backtests finished 15:38-15:46 and the alerts stopped; dev-env notebook activity-complete-race"
+summary: "activities:complete 500 'Running activity poll_execution not found' spammed Discord: tick created the activity task before addRunningActivity; fix marks running first (new Convex removeRunningActivity rollback) and complete acks a not-running activity; structure-web branch backtest-download-stream off origin/main also carries the streamed results download; depends on uncommitted gcp requestStream; not pushed; the six backtests finished 15:38-15:46 and the alerts stopped; internal endpoints adopt the caller x-trace-id after auth (f30f2dbd2); dev-env notebook activity-complete-race"
 related_sessions:
   - SESS-00PYCE2
   - SESS-00PE96K
@@ -130,6 +130,32 @@ with an alert.
 
 Not changed: the attempt mismatch path in `complete` still answers
 `Internal` (500), and `fail` still answers `NotFound` for a missing activity.
+
+### D5. Internal endpoints take the caller's x-trace-id (2026-10-07)
+
+The user asked whether the request trace id is set every time. It is sent:
+the tick sets `x-trace-id` to the activity id on the worker task, the worker
+adopts it (`activity-worker/src/routes.ts`), and sends it back on the
+callbacks. The application-server ignored it since `5e2199631`
+(2026-07-23, by a colleague: "The trace id is generated server side"), so
+each callback, each Cloud Tasks retry and each Discord alert had its own
+ULID.
+
+The user accepted: "Yeah, let's do that. Keep it wherever there is a fix
+for the activities". Commit `f30f2dbd2` on `backtest-download-stream`:
+
+- `CallerTraceID()` in `packages/api/src/lib/api.ts`, added after the
+  authentication middleware on the 18 internal routes (not on
+  `/openapi.internal.json`, which has no authentication).
+- Accepted values match `^[A-Za-z0-9+/=_-]{1,128}$` (base64 activity ids,
+  ULIDs, `trace_` ids); anything else is ignored with a
+  `api.caller_trace_id.invalid` warning.
+- Public requests keep the server ULID. The request log line keeps the ULID;
+  `api.caller_trace_id.adopted caller_trace_id=...` links the two.
+- Table test in `src/lib/api.test.ts` (8 cases); the file's 9 tests pass.
+
+Not done: tick tasks (`enqueueTickTask`) send no `x-trace-id`, so ticks keep
+server trace ids.
 
 ## Verification
 

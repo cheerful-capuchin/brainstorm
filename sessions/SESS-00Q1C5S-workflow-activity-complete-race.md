@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-07T15:48:09Z
 title: "Workflow activity completion race and the backtest download stream branch"
-summary: "activities:complete 500 'Running activity poll_execution not found' spammed Discord: tick created the activity task before addRunningActivity; fix marks running first (new Convex removeRunningActivity rollback) and complete acks a not-running activity; structure-web branch backtest-download-stream off origin/main also carries the streamed results download; depends on uncommitted gcp requestStream; not pushed; the six backtests finished 15:38-15:46 and the alerts stopped; internal endpoints adopt the caller x-trace-id after auth (f30f2dbd2); dev-env notebook activity-complete-race"
+summary: "activities:complete 500 'Running activity poll_execution not found' spammed Discord: tick created the activity task before addRunningActivity; fix marks running first (new Convex removeRunningActivity rollback) and complete acks a not-running activity; structure-web branch backtest-download-stream off origin/main also carries the streamed results download; depends on uncommitted gcp requestStream; not pushed; the six backtests finished 15:38-15:46 and the alerts stopped; internal endpoints adopt the caller x-trace-id after auth (f30f2dbd2); one trace id per workflow stored in Convex, inherited by children, sent on ticks/activities/callbacks (3088cdd0a); activities-api logs via argus; dev-env notebook activity-complete-race"
 related_sessions:
   - SESS-00PYCE2
   - SESS-00PE96K
@@ -157,6 +157,40 @@ for the activities". Commit `f30f2dbd2` on `backtest-download-stream`:
 Not done: tick tasks (`enqueueTickTask`) send no `x-trace-id`, so ticks keep
 server trace ids.
 
+### D6. One trace id per workflow, start to end; argus in activities-api (2026-10-07)
+
+The user asked why the activity trace id is base64 and not a ULID. It is the
+callback token (`encodeActivityID`: workflow id, activity name, attempt,
+base64), reused as `x-trace-id` since `ca6f1de7d` (2025-10-08). It is not
+unique per run: every `poll_execution` cycle is attempt 1.
+
+The user decided: "Ideally, everything from start workflow until finished
+workflow should have the same trace id. and use argus in the
+activities-api, not simple logger". Commit `3088cdd0a`:
+
+- Convex `workflows.traceId` (`v.optional`, as a migration: older workflows
+  have none). `Workflow.traceID(wf)` falls back to the workflow id.
+- `startWorkflow` stores `context().traceID`; child workflows inherit the
+  parent's. `enqueueTickTask` takes `traceID` (all 13 call sites);
+  `scheduleActivityRun` and `ActivityWorker.buildTaskHttpRequest` send the
+  workflow trace id instead of the activity id.
+- The internal client (`app/internal-client.ts`) sets `x-trace-id` from the
+  context in a ky `beforeRequest` hook, so `POST /backtests` -> internal
+  `workflows:start` keeps the user request's ULID for the whole workflow.
+- Activity worker: `ActivityJob.details.traceID` is the request's trace id
+  (from the header); `executeJob` no longer switches to the activity id.
+- `CallerTraceID` accepts `^[A-Za-z0-9_-]{1,128}$` (no `+ / =`); test cases
+  for workflow ids and rejected base64.
+- `activities-api.ts`: 27 logger calls -> argus with snake_case fields.
+  `logger.error` became `argus.warn`, because the JSON handler alerts on
+  every code the handler returns (`ERROR_CODE_TO_REPORT` includes
+  InvalidArgument, NotFound, FailedPrecondition "for the release period")
+  and argus ERROR goes to Discord (`minSeverity: ERROR`), which would alert
+  twice.
+
+Not changed: `activities:fail` still answers NotFound / FailedPrecondition
+for a missing activity or attempt mismatch, which alerts and is retried.
+
 ## Verification
 
 - `just typecheck` in `packages/api` stops at pnpm's dependency check
@@ -172,8 +206,11 @@ server trace ids.
 
 - Push `backtest-download-stream`; commit and push the `gcp` streaming
   helpers. The user has not decided.
-- Deploy order: `just convex_prod` (new `removeRunningActivity`) before the
-  application-server.
+- Deploy order: `just convex_prod` (new `removeRunningActivity`, optional
+  `traceId` field) before the application-server; deploy the activity worker
+  with it.
+- Code not formatted (structure-web rule: formatting is a human task before
+  the PR); `just check` will flag `activities-api.ts` until `just fmt api`.
 
 ## dev-env
 

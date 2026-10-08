@@ -647,3 +647,126 @@ the application database, not only `strategy_config`.
 Recorded as DEC-0C6J2 (accepted) and the new REF:application-db; DEC-0BZBC's
 storage owner answer points to DEC-0C6J2. Exact schema names and fingerprints
 are left to the implementation and maintained in code.
+
+### D27. The protobuf `execute` protocol breaks for strategy deployments (2026-10-09)
+
+Main gained a protobuf `POST /api/v0/execute` endpoint (content-shape codecs in
+data-feed-definitions, handlers in structure-web `strategies-handler.ts` and
+`trading-accounts-handler.ts`) while the deployment branch was open. Its
+Strategies service still has StrategyStart / StrategyStop, the revision
+status and `provisioned_revision_id`, and its TradingAccounts service has
+AttachStrategy / DetachStrategy. The codec itself imports
+`StrategyRevision.Status` from strategy-core.
+
+User: "break the protocol". Options weighed: reject the old methods in the
+handlers, map them onto deployments (start creates an immediate deployment,
+stop is the strategy-wide stop), or change the protocol. Chosen: change the
+protocol, with no compatibility: the old methods and fields go. The codec has
+another owner (the execute endpoint's author).
+
+### D28. A failed stop leaves the revision running (2026-10-09)
+
+Supersedes the D20 completion behaviour for the stop workflow (finding W1 of
+the review notebooks). User: "if it fails, then the revision must still be
+running". A stop workflow that fails does not end the revision: it stays
+`running` and keeps its trading accounts, so no other deployment can take an
+account while the worker pool may still trade. The user can stop it again.
+A failed start workflow still commits `failed`.
+
+Amended the same day: the revision returns to the status it was stopped
+from, not always `running`: `running` if it ever became ready, otherwise
+`starting` (user: "back to the state it was stopped from"). Reason: a stop
+during the image build that fails must not show `running` while the start
+workflow (W2 fix) skipped creating the pool. Only the revision's own stop
+workflow can restore it; the stop fields reset so it can be stopped again.
+
+### D29. Avro ships with the deployments; DSL 1.1 revisions are deleted (2026-10-09)
+
+The Avro blob work (D26, DEC-0C6J2) ships with the strategy deployment work.
+The backfill's purge of DSL 1.1 strategy revisions, with their backtests and
+deployments, is accepted (user: "we can delete the v 1.1"), so finding A1 is
+closed as intended behaviour.
+
+## Release order (written 2026-10-09)
+
+Branch `dec-0bzbc-strategy-deployment-entity` in every repo below. State on
+2026-10-09, after the rebases onto each repo's `origin/main` the same day.
+Backups of the pre-rebase tips: `backup/dec-0bzbc-before-rebase-2026-10-09`
+(`backup-dec-0bzbc-...` in domain and dsl-processor-core, which already have
+a branch named `backup`).
+
+| Repo | Tip | On GitHub | Ahead of main | Note |
+| --- | --- | --- | --- | --- |
+| strategy-core | 3b2e560 | no | 6 | checkout has staged, unrelated client-domain-package changes; keep them out of this PR |
+| messaging/msg-schemas | b97be2f | no | 3 | 2 deployment commits + an unrelated timer fix (b97be2f); messaging pins b97be2f |
+| dsl-runtime | 6b615bc | no | 2 | LiveRegimeConfig carries the deployment revision and its accounts |
+| data-feed-core | 74e3e7e | no | 1 | |
+| domain | d3a1f45 | no | 3 | rebased; id wasm rebuilt from GitHub main deps; WIP commit holds the base32 fix and the LogEntry eventTime rename (both unrelated) |
+| entity-core | a736388 | no | 3 | |
+| messaging | 4491912 | no | 7 | WIP commit removes DSL 1.1 args from ts/src/strategy-spec.ts (unrelated, finding R6) |
+| data-feed-definitions | edfccc3 | old fa92a09 | 5 | rebased; needs force push; carries the unrelated "alerts feed" commit; user's cme-options-market-info branch sits on the old fa92a09 |
+| dsl-processor-core | f0b583f | no | 1 | rebased; committed compiler wasm is the old pre-rebase build |
+| application-server | aa53a09 | no | 2 | rebased; wasm rebuilt from GitHub main deps, so it lacks the attach/detach account events and the branch's own test fails until the deps merge |
+| repos | 4860ee6 | no | 1 | |
+| event-gw | e53ad45 | yes | 6 | |
+| strats_v2 | 3bfbb4f | no | 6 | R1 fix in progress (executor enforces deployment ownership) |
+| structure-strat-template-core | 90e2bdb | no | 5 | |
+| structure-web | d541d03d1 | old ae40d1c0e | 30 | rebased + post-rebase fix commit; W1/W3/S1/W2 fixes in progress; needs force push |
+| application-server-client | 0401200 | no | 8 | rebased; openapi.json is a script merge (main's six DEC-0CAF0 kinds added), not regenerated |
+| stxr-client-app | ed36f2d1 | no | 12 | NOT rebased: 59 commits behind main, 36 conflicting files |
+| feed-info | f3f8fa4 | ? | 1 | removed from the workspace root (staged delete); find where its one commit belongs |
+
+### Merge order (code)
+
+Each step needs the previous ones on `main`, because builds outside the
+workspace resolve sibling crates and packages from their GitHub `main`
+(the workspace `.cargo/config.toml` [patch] only helps locally).
+
+1. **strategy-core** and **messaging/msg-schemas**. Everything else depends
+   on strategy-core's StrategyDeploymentRevisionId, subjects and entities.
+2. **dsl-runtime**, **data-feed-core**, **domain**, **entity-core**,
+   **messaging** (bump msg-schemas to its merged commit first),
+   **application-server-client** (repos needs its Rust account list and
+   structure-web its internal client; regenerate it after step 6).
+3. **data-feed-definitions** (needs strategy-core + data-feed-core on main to
+   build; its feed codecs fail to build from main until then). The protobuf
+   `execute` protocol break (D27) also lands here.
+4. Rebuild the committed wasm against the merged mains, then merge:
+   **dsl-processor-core** (`just generate_wasm`; needs dsl-runtime) and
+   **application-server** (`just build`; needs data-feed-definitions +
+   strategy-core; the branch's attach/detach test must pass on the rebuild).
+5. **repos**, **event-gw**, **strats_v2**, **structure-strat-template-core**.
+6. **structure-web** and **strats_v2**, then regenerate
+   **application-server-client** from a running server built from
+   structure-web (replaces the script-merged spec; follow-up PR), then
+   **stxr-client-app** (rebase first, point its application-server-client
+   submodule at the regenerated client).
+7. **knowledge-base**: update DEC-0BZBC to D21-D29, mark it accepted, close
+   PLAN-0BZET/0BZEW/0BZEY.
+
+Before step 1, still open: the R1 and W1/W3/S1/W2 fixes (agents running),
+the protocol break (D27, which methods replace start/stop/attach/detach not
+yet decided), the stxr-client-app rebase, splitting out the unrelated commits
+(alerts feed, base32, eventTime, DSL 1.1 args in messaging, msg-schemas
+timer fix) if wanted, and the client-core consumer (finding F2).
+
+### Deploy order (runtime)
+
+1. Stop every running strategy deployment (D9: the migration drops the old
+   deployment tables, no data migration).
+2. Deploy **event-gw** and the **strats_v2** executor. The trading account
+   feeds change shape (D18): in-flight old messages are dropped. The executor
+   must run before any new strategy runtime, because a runtime built from
+   this branch rejects status updates from an older executor (R7).
+3. Application database: run the migrations (deployment tables, Avro blobs,
+   append-only schema registry), then `just backfill_avro` (purges DSL 1.1
+   revisions with their backtests and deployments, D29; prefer stopping the
+   api or rerun the backfill after the deploy, finding A4), then deploy the
+   **api** and the **activity worker** together (service status ERROR became
+   FAILED in the backtest commit request too, finding E6).
+4. Release the new strategy runtime (structure-strat-template-core image).
+5. Release **stxr-client-app** and update **client-core** (F2).
+
+PRs opened 2026-10-09 on branch `dec-0bzbc-strategy-deployments` (event-gw
+keeps its existing PR #16 on `dec-0bzbc-strategy-deployment-entity`); links in
+the workspace `prs.md`.

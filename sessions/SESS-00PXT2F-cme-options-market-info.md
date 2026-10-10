@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-06T07:20:47Z
 title: "CME options in market info"
-summary: "Options domain (D14-D19), id hash venue+type (D21), Databento migration plan (D22-D24, D27 trial not run), consumers (D25), #[kind] derive (D26), backtest feed (D28), review fixes, docs, IdHashInput, asset ids in market-info-core, CME data in cme-globex (D29-D38). 2026-10-10: market-info-core #19 merged; instruments typed by market + venue kinds + MarketInfo::Option (D40, DEC-0CDBZ proposed); option arms downstream (D41); portfolio value on contract terms (D42); trading schedules in market-info-repo (D43). D45: pushed and in PRs (market-info-core #20 new, market-info #27, trade #14, backtest-post-processor #14, sim-gw #16, databento-mkt-data #5, event-gw #16, knowledge-base #137); not committed: option arms and schedule repo in application-server, client, dsl-runtime, strats_v2, structure-strat-template-core (need market-info-release branches). D46: structure-web salvage of the deployment branch (logs event_time #172, small fixes #173 merged; Avro waits). D47: snowflake backtest ids + per-start/per-backtest limit_order_offset_bps, 11 PRs open (template-core #29, structure-web #174/#175, infra #29, dfd #13/#14, domain #20, dsl-runtime #27, strategy-core #16, dsl-processor-core #18, structure-sdk #1). D48: msg-schemas #31 + messaging #52 remove ComputeBacktestIdRequest; KB #138 (DEC-0CDPA, DEC-0CDPB); protocol Backtest response carries the offset"
+summary: "Options domain (D14-D19), id hash venue+type (D21), Databento migration (D22-D24, D27; D51: 840 folders copied and verified, old folders not deleted), consumers (D25), #[kind] derive (D26), backtest feed (D28), review fixes, docs, IdHashInput, asset ids in market-info-core, CME data in cme-globex (D29-D38). 2026-10-10: market-info-core #19 merged; instruments typed by market + venue kinds + MarketInfo::Option (D40, DEC-0CDBZ proposed); option arms downstream (D41); portfolio value on contract terms (D42); trading schedules in market-info-repo (D43). D45: pushed and in PRs (market-info-core #20 new, market-info #27, trade #14, backtest-post-processor #14, sim-gw #16, databento-mkt-data #5, event-gw #16, knowledge-base #137); not committed: option arms and schedule repo in application-server, client, dsl-runtime, strats_v2, structure-strat-template-core (need market-info-release branches). D46: structure-web salvage of the deployment branch (logs event_time #172, small fixes #173 merged; Avro waits). D47: snowflake backtest ids + per-start/per-backtest limit_order_offset_bps, 11 PRs open (template-core #29, structure-web #174/#175, infra #29, dfd #13/#14, domain #20, dsl-runtime #27, strategy-core #16, dsl-processor-core #18, structure-sdk #1). D48: msg-schemas #31 + messaging #52 remove ComputeBacktestIdRequest; KB #138 (DEC-0CDPA, DEC-0CDPB); protocol Backtest response carries the offset. D49: Avro blobs #176 with backtests.strategy_config; #175 force-pushed (offset in StrategyConfig, no column); strategy-core #17 node mappings; drop-strategies.sql. D50: deployed to production (template #9, runtime d5c6044, migration, pulumi up)"
 related_sessions: []
 ---
 
@@ -826,6 +826,8 @@ databento repo under `misc`.
   `--map <file>` selects another map with the same columns.
 - Not run yet: step 1 writes to the production bucket and waits for the
   user's go.
+- Later: the script was renamed `remap_instrument_folders.py`, covers every
+  schema, and the full copy ran and verified; see D51.
 
 ### D25. Consumers fixed: marketdata, trade, trade_v2 (2026-10-08, committed locally)
 
@@ -925,6 +927,9 @@ file and once I'm ready I'll let the agent run it".
   the bucket objects (CRC32C `GA103Q==` / `8I9+DQ==` local vs `O11ERQ==` /
   `XM5lww==` in the bucket for 2026-09-10 / 2026-09-11); they came from a
   separate download.
+
+Later: the trial was skipped; the full copy ran directly (D51). The
+commands below use the old script name `copy_mbp1_folders.py`.
 
 #### Trial run instructions (for the agent, once the user says go)
 
@@ -1632,3 +1637,125 @@ knowledge base -> update".
     with the Backtest, BacktestWithExecution and BacktestPage shape ids
     re-pinned;
   - structure-web #175 `5b1887c77`: the adapter sends the stored value.
+
+### D49. Avro blobs on main; the offset lives in strategy_config (2026-10-10, pushed)
+
+The user rejected the `backtests.limit_order_offset_bps` column: "I don't
+want a new column per each property we want to pass to a backtest". Then:
+"I'm going to drop all the strategies, there is no need to backfill or
+migrate anything". Plan and progress are in the dev-env notebook
+`avro-and-backtest-strategy-config`.
+
+| Repository | Branch | Commits | PR |
+| --- | --- | --- | --- |
+| structure-web | `dec-0c6j2-avro-blobs` (on #174) | `3e743678a`, `a55e9b5f3`, `c230621c7`, `7d91b2925`, `e35a1097e` | #176 |
+| structure-web | `limit-order-offset` (force-pushed, base #176) | `49127eb43` | #175 |
+| strategy-core | `remove-node-mappings` | `7999e7d` | #17 |
+| knowledge-base | `backtest-snowflake-ids-and-limit-offset` | `1c4cf43`, `0914747` | #138 |
+
+- Avro (DEC-0C6J2) is ported from the deployment branch without the
+  deployment entity. main's old `strategy_deployments` has its `service`
+  and `error` columns converted like every other blob.
+- `backtests.strategy_config` is an Avro `StrategyConfig` (policies, typed
+  bindings, and a required `limit_order_offset_bps`). It replaces
+  `strategy_spec_arguments` and `strategy_variable_bindings`.
+- No backfill and no DSL 1.1 purge. The migration fails on NOT NULL if a
+  strategy table still has rows. The DSL 1.1 guards and the node mappings
+  are removed (the user: "node mappings can be removed").
+- `packages/app-db/misc/drop-strategies.sql` deletes strategies, revisions,
+  backtests, deployments, both connection tables, templates, images,
+  runtime revisions and `strategies_http.*` kv entries. It was tested on a
+  database migrated to main. Templates and images must go too: their ids
+  are content hashes and nothing re-creates the rows.
+- Migration steps are in the `e35a1097e` commit message and in #176.
+- The 22 notebooks deleted by mistake in IntelliJ (restored empty) were
+  rebuilt by replaying the Claude Code transcripts' Write/Edit calls and
+  shell edits in a sandbox (scratch files in `/private/tmp/notebook-recovery`).
+
+### D50. Deployed: Avro blobs, snowflake backtest ids, limit order offset (2026-10-10)
+
+- Signing mistake: `just sign_latest_commits 9` on `snowflake-backtest-ids`
+  (after #175 and #176 were merged into it) rebased through main's merges
+  and force-pushed linearized copies. The fix rebuilt the branch as
+  `origin/main` plus the 7 commits, signed with `cherry-pick -S`, with the
+  tree identical to before the signing. #174 was then merged. A branch's own
+  commits are signed with `git rebase -S origin/main`, not
+  `sign_latest_commits N`.
+- The image build failed on unformatted files (fixed in #177) and on a
+  missing `structure-sdk` in infra's structure-web image allowlist.
+- Template: structure-strat-template #9, template-core `12ba658`.
+  - The lock was moved to main outside the workspace, because the
+    workspace's `.cargo/config.toml` patches would write local paths into
+    it.
+  - The builder was rebuilt on Cloud Build after the `strategies-builders`
+    team was given `structure-sdk` (infra `github.ts`).
+  - infra pins runtime `d5c6044`.
+- infra #30: the realtime-gateway parts of #25. Its older
+  application-server digest was left out.
+- Production: `drop-strategies.sql` committed, migrated, `pulumi up`. The
+  public OpenAPI shows the new fields.
+- Clients:
+  - application-server-client #15: the public client regenerated from the
+    production API (no discovery key, so the internal client was not
+    regenerated; it contains none of the changed types);
+  - stxr-client-app #31: submodule at `2f7de3f`; only test fixtures
+    changed.
+  Both signed and merged.
+- Left: a smoke test backtest, the first real build with the new
+  strategy-builder.
+- The user: no PRs for one-line changes.
+
+### D51. Databento folders copied to the new ids (2026-10-10/11; checked 2026-10-12)
+
+The user asked to check that the script's later changes and the copy were
+recorded and that everything moved. Assembled from databento-mkt-data git
+history, the Claude Code transcripts (mainly session `008b1a30`, the release
+work of D44-D50) and the bucket.
+
+- Script history, databento-mkt-data:
+  - `8cace06` / `301ff88` (2026-10-09, same change on two branches):
+    `copy_mbp1_folders.py` with both maps committed.
+  - `3b72f53` (2026-10-10): renamed `remap_instrument_folders.py`. The
+    download job files every schema under `{schema}/{instrument id}/`, so the
+    script works through `mbp-1`, `status`, `ohlcv-1s`, `ohlcv-1m`,
+    `ohlcv-1h`, `ohlcv-1d` (those the bucket holds), leaves `definition/` and
+    `markers/` alone (their files name no instrument) and reports a top-level
+    folder it does not know. Modes, map checks and `--map` are unchanged.
+    Shipped in PR #5 (merged, `bc63735`).
+- Run (session `008b1a30`, the user approved the full `--run` on 2026-10-10
+  22:11 with "Yes"; the five-folder trial of D27 was not run):
+  - Order used: production deployed on market-info `480d1b5` first
+    (`infra` `8329b9e`, `pulumi up` 2026-10-10 ~21:56), then the copy. ESZ6
+    was copied and checked alone first for the 0-slippage backtest
+    (`bt_02V24AZFW0400`).
+  - First full `--run` stopped at the two-hour command limit after 516 of
+    840 folders; a detached rerun failed when the gcloud login expired; the
+    third run (after `gcloud auth login`, 2026-10-11 ~09:54) finished:
+    `folders: 840`, `run exit=0` (`/tmp/remap-run3.log`).
+  - `--verify`: `verify exit=0`, 840 `ok` lines, ended 2026-10-11 16:17
+    (`/tmp/remap-verify3.log`).
+  - `--delete` not run.
+- Checked 2026-10-12 on `mbp-1`: 9,526 files in the 140 old folders, 9,649 in
+  the 140 new ones, 25 in folders of markets not in the map (added to the
+  catalog after b34b5df). The last write to an old folder was
+  2026-10-10T06:33Z, before the copy and the verify, so nothing written
+  under the old ids is missing from the new folders. The newest object in the
+  bucket is 2026-10-11T06:31Z. ESZ6 new folder ends at 2026-10-10, old at
+  2026-10-09.
+- Readers: production pins market-info `480d1b5` (new ids). Dev still pins
+  `a7c65b6`, which has no CME Group futures, so dev reads none of these
+  folders.
+- The download job no longer uses markers (databento-mkt-data `6282881`,
+  2026-10-12): a (market, day) is done when its object exists. D24's reason
+  for copying ("a plain re-run skips every marked day") no longer holds for
+  the new job; the copy still saves the Databento cost. With the new job, an
+  old-id file the copy had missed would have been downloaded again under the
+  new id, not lost.
+- `/private/tmp/inst-id-remap/` (D21 facts: the 682-row mapping incl.
+  Hyperliquid) is gone. The 140 CME Group rows survive in
+  `databento-mkt-data/misc/instrument-id-remap/instrument-id-map.csv`;
+  Hyperliquid data is not kept (D22).
+- Left: `--delete` (removes the 840 old folders, about 130 GB in `mbp-1`
+  alone), on the user's go. Release notes notebook step 10 lists it.
+- Session file numbering: D29 and D30 each appear twice (two sessions wrote
+  at once on 2026-10-09); not renumbered.

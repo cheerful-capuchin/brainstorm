@@ -24,6 +24,9 @@ that decisions stay durable and traceable across conversations.
   from the current UTC second.
 - The script writes a `title` field into the front matter. The desktop app
   requires it and shows it as the session name; never remove it.
+- The script also writes `agents`, the `<harness>:<session id>` of each agent
+  session that wrote to the record. Before writing to a record created in
+  another conversation, run `just join SESS-...` to add yourself.
 - The body below the title is free-form. Capture each decision, the reasoning
   the user gave, and the alternatives they rejected, in their own terms.
 - Keep adding to the same record for the rest of the conversation instead of

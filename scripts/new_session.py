@@ -8,6 +8,7 @@ Session IDs are `SESS-` followed by fixed-width Crockford base32 seconds since
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from datetime import UTC, datetime
@@ -20,6 +21,14 @@ TAG_WIDTH = 7
 PREFIX = "SESS"
 SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SESSION_ID_PATTERN = re.compile(rf"^{PREFIX}-[{CROCKFORD_ALPHABET}]{{{TAG_WIDTH}}}$")
+HARNESS_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+HARNESS_SESSION_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+# Environment variables that name the agent harness session running the script.
+# The first variable that is set wins.
+HARNESS_ENVIRONMENT = (
+    ("claude-code", "CLAUDE_CODE_SESSION_ID"),
+    ("codex", "CODEX_THREAD_ID"),
+)
 
 
 def seconds_since_epoch(moment: datetime) -> int:
@@ -87,15 +96,45 @@ def parse_related(related: str) -> list[str]:
     return identifiers
 
 
-def render_session(identifier: str, title: str, moment: datetime, related: list[str]) -> str:
+def resolve_agent(harness: str, harness_session: str) -> str:
+    """Return the `<harness>:<session id>` entry for the agent running the script.
+
+    Explicit arguments win; otherwise the harness is detected from its
+    environment variables.
+    """
+    if bool(harness) != bool(harness_session):
+        raise ValueError("pass --harness and --harness-session together")
+    if not harness:
+        for name, variable in HARNESS_ENVIRONMENT:
+            value = os.environ.get(variable, "").strip()
+            if value:
+                harness, harness_session = name, value
+                break
+        else:
+            raise ValueError(
+                "cannot detect the agent harness; pass --harness and --harness-session"
+            )
+    if not HARNESS_PATTERN.fullmatch(harness):
+        raise ValueError(f"harness must be lowercase kebab-case: {harness!r}")
+    if not HARNESS_SESSION_PATTERN.fullmatch(harness_session):
+        raise ValueError(f"harness session id has unexpected characters: {harness_session!r}")
+    return f"{harness}:{harness_session}"
+
+
+def render_list(key: str, items: list[str]) -> str:
+    if not items:
+        return f"{key}: []\n"
+    return f"{key}:\n" + "".join(f"  - {item}\n" for item in items)
+
+
+def render_session(
+    identifier: str, title: str, moment: datetime, related: list[str], agent: str
+) -> str:
     create_time = moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if related:
-        related_block = "related_sessions:\n" + "".join(f"  - {item}\n" for item in related)
-    else:
-        related_block = "related_sessions: []\n"
     return (
         f"---\ncreate_time: {create_time}\ntitle: {quote_title(title)}\n"
-        f"summary: \"\"\n{related_block}---\n\n"
+        f"summary: \"\"\n{render_list('related_sessions', related)}"
+        f"{render_list('agents', [agent])}---\n\n"
         f"# {identifier}: {title}\n"
     )
 
@@ -105,12 +144,13 @@ def create_session(
     slug: str,
     title: str,
     related: list[str],
+    agent: str,
     moment: datetime | None = None,
 ) -> Path:
     when = moment or datetime.now(UTC)
     identifier = session_id(when)
     # Render before touching the disk so a rejected title leaves no empty file.
-    content = render_session(identifier, title, when, related)
+    content = render_session(identifier, title, when, related, agent)
 
     collisions = list(directory.glob(f"{identifier}-*.md"))
     if collisions:
@@ -132,7 +172,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="",
         help="Comma-separated related session IDs (example: SESS-00ABCDE,SESS-00ABCDF)",
     )
+    add_agent_arguments(parser)
     return parser.parse_args(argv)
+
+
+def add_agent_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--harness",
+        default="",
+        help="Agent harness name (example: claude-code); detected from the environment if omitted",
+    )
+    parser.add_argument(
+        "--harness-session",
+        default="",
+        help="Session id inside the harness; detected from the environment if omitted",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -145,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
             validate_slug(args.slug),
             normalize_title(args.title),
             parse_related(args.related),
+            resolve_agent(args.harness, args.harness_session),
         )
     except (FileExistsError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

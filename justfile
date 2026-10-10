@@ -8,6 +8,10 @@ set default-list := true
 session slug title related="":
     @python3 scripts/new_session.py --slug {{quote(slug)}} --title {{quote(title)}} --related {{quote(related)}}
 
+# Add the running agent's harness and session id to an existing record.
+join session:
+    @python3 scripts/join_session.py {{quote(session)}}
+
 # List every session record, newest first: ID, date, title, summary, related.
 sessions:
     @python3 scripts/list_sessions.py

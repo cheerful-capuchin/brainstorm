@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-13T09:34:12Z
 title: "Target executor position off by one from mixed sequence numbers"
-summary: "Target executor fills ordered by gateway_receive_time vs sim-gw orderand (ISS-0C0KR). Decided: fills carry the same venue orderand as the feed Fill, required on every execution report, sim-gw orderand a persisted counter not time, keep trade_v2 SequenceNumber for now (D7), demo deployment nuked. sim-gw assumed never to crash (D8); ISS-0CHD0 Sim GW Issues pointer + sim-gw ISSUE-0002 covers orderand (D9). D10: implementing VenueOrderand/SimulatorOrderand(u64) on VenueResponse+OrderUpdate, Trade and Fill share it; PRs on branch venue-orderand"
+summary: "Target executor fills ordered by gateway_receive_time vs sim-gw orderand (ISS-0C0KR). Decided: fills carry the same venue orderand as the feed Fill, required on every execution report, sim-gw orderand a persisted counter not time, keep trade_v2 SequenceNumber for now (D7), demo deployment nuked. sim-gw assumed never to crash (D8); ISS-0CHD0 Sim GW Issues pointer + sim-gw ISSUE-0002 covers orderand (D9). D10: implementing VenueOrderand/SimulatorOrderand(u64) on VenueResponse+OrderUpdate, Trade and Fill share it; PRs msg-schemas#32 messaging#53 sim-gw#17 strats_v2#14 knowledge-base#142"
 related_sessions: []
 agents:
   - claude-code:7f074ada-7590-48bd-b348-5fcc0df37972
@@ -233,6 +233,22 @@ OrderSnapshot), `message VenueOrderand { oneof value { SimulatorOrderand
 simulator = 1; } }`, `message SimulatorOrderand { uint64 value = 1; }` in
 uni-gw types.proto; `GatewayResponse` gets none (gateway, not venue). Branch
 `venue-orderand` in msg-schemas, messaging, sim-gw, strats_v2.
+
+D10 implemented (2026-10-13), PRs open for the user's review:
+stxr-prop/msg-schemas#32, stxr-prop/messaging#53, stxr-prop/sim-gw#17,
+stxr-prop/strats_v2#14, stxr-prop/knowledge-base#142 (ISS-0CHD0). Merge
+order: msg-schemas, messaging, then sim-gw and strats_v2. sim-gw: plain u64
+counter (`next_orderand()` without TimeProvider, `Exhausted` only), v1
+snapshot unchanged, Trade and Fill share the drawn value, VenueResponse gets
+its own, position update the next. strats_v2: domain
+`VenueOrderand::Simulator(u64)` in `target_executor/types.rs` with the single
+`From<VenueOrderand> for SequenceNumber`; `MissingVenueOrderand` replaces
+`MissingSequenceSource`; table test
+`test_fills_and_position_reports_any_arrival_order_ends_on_venue_position`.
+Left: sim-gw internal trackers still sequence by time; TradeCancel orderand
+validated but unused; ISS-0CHD0 Linear ticket; a pre-existing unrelated
+msg-schemas change (CreateOrderGatewayAccepted moved) sits in `git stash` in
+msg-schemas.
 
 ## Agent proposals awaiting the user (not decisions)
 

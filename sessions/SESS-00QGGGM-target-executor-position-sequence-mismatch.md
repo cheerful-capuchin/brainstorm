@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-13T09:34:12Z
 title: "Target executor position off by one from mixed sequence numbers"
-summary: "Bug report transcribed: target executor ESZ6 position +1 off on sim-gw since 2026-10-11 21:08:47; fills ordered by gateway_receive_time (ns) vs venue positions by sim-gw orderand, compared in trade_v2 position tracker, so every venue report is stale. Proposed fix (not decided): Trade carries the sim-gw fill orderand. dev-env notebook target-exec-position-bug"
+summary: "Target executor fills ordered by gateway_receive_time vs sim-gw orderand (ISS-0C0KR). Decided: fills carry the same venue orderand as the feed Fill, required on every execution report, sim-gw orderand a persisted counter not time, drop trade_v2 SequenceNumber ideally, demo deployment nuked. Open: counter crash safety (block reservation proposed), uni-gw VenueOrderand proto"
 related_sessions: []
 agents:
   - claude-code:7f074ada-7590-48bd-b348-5fcc0df37972
@@ -130,3 +130,84 @@ Open questions for the user:
 
 The explanation for the user is the dev-env notebook
 `target-exec-position-bug` in session `sess-00qgggm`.
+
+## Decisions (2026-10-13, from notebook annotations)
+
+D1. Fill reports are ordered by an orderand, never by time. The user: "this
+is for sure fucked up, it cannot do that, we need an orderand" and "we need
+the same orderand, never depend on time". `sequence_number_from_timestamp`
+and every use of `gateway_receive_time` for ordering in the executor go.
+
+D2. The fill report on the gateway and the `Fill` event on the sim venue feed
+carry the same orderand. The user confirmed they are the same thing ("Those
+are the same things"). The position report that follows keeps its own, later
+orderand. Affects `messaging` (uni-gw `Trade`), `sim-gw`, `strats_v2`.
+
+D3. Every venue execution report must carry a sequence number. There is no
+fallback for a report without one ("It's impossible. each venue execution
+report MUST have a sequence number"). Replaces the open question above about
+gateways without the field: the field is required, a report without it is
+invalid.
+
+D4. The sim-gw orderand stops depending on time. It is a counter persisted in
+the sim-gw rkyv state snapshot. Affects `sim-gw/src/orderand.rs` (drop the
+`seconds << 31 | bump` layout) and the snapshot, which needs a new version
+(never edit v1). The snapshot already stores `last_feed_orderand`; how the
+counter survives a crash between periodic snapshots is open (see below).
+
+D5. Ideally the executor does not use `trade_v2`'s `SequenceNumber` enum at
+all (the user: "Ideally, we don't even use that shitty thing"). If replacing
+it is too much work, fix sim-gw first and keep the enum for now. Open: how
+large the replacement is; whether the user's earlier position tracker
+prototype can take its place.
+
+D6. No repair of the running demo deployment. The user will delete it and
+start a new strategy.
+
+D1-D6 supersede the "Proposed fix" open questions above: the gateway without
+a field question is settled by D3, the repair question by D6.
+
+## Findings that shape the fix (2026-10-13)
+
+- No knowledge-base record decides the uni-gw message schema. The only design
+  document is `sim-gw/docs/research/schema_proposal/client_order_gateway_schema_proposal.md`
+  (Draft 3); its `Trade` matches the current proto and has no ordering field.
+- DEC-07RD2 (Feed Orderand, proposed): orderands are feed-scoped and never
+  compared across feeds; do not name the concept `sequence_number`.
+  DEC-07RE5: orderands are venue-scoped, one per simulated venue.
+  DEC-08VKD sketches `enum VenueOrderand { Simulation { sequence_number: u64 } }`,
+  not comparable across venue kinds.
+- ISS-0C0KR (paper deployment sells right after its first fill) is an earlier
+  sighting of this bug: its hypothesis 2 is "sequence numbers came from
+  different counters". ISS-0B206 (orderands depend on wall clock time,
+  ENG-2027) covers sim-gw and event-gw; D4 closes the sim-gw half.
+- sim-gw already persists `last_feed_orderand` in snapshot v1 and resumes
+  after it. Snapshots are written after init, hourly when deployed, and
+  before shutdown (sim-gw ADR-0004); a crash loses up to an hour (sim-gw
+  ISSUE-0002). A plain counter restored from the hourly snapshot would reuse
+  up to an hour of orderands after a crash, and consumers would drop those
+  events as stale. sim-gw also uses the snapshot's `taken_at` wall clock as
+  the sequence number of restored positions, which conflicts with D1.
+- The user's position tracker prototype is `prototypes/position-tracker`
+  (`src/tracker_traits.rs`: `PositionValue`, `CostBasisUpdate::{Set, Add, Remove}`,
+  `go_flat`). It is in no crate; the `venue-core` venue simulator crate it was
+  planned for does not exist. It has no ordering at all (arrival order).
+- The executor uses `SequenceNumber` because `trade_v2::MultiAccountPositionTracker`
+  takes it on every update; about 34 mentions in `strats_v2/src/target_executor`.
+
+## Agent proposals awaiting the user (not decisions)
+
+- Proto shape (shown as a diff in the notebook): `VenueOrderand venue_orderand = 18`
+  on `uni_gw.Trade`, `= 11` on `TradeCancel`, `= 16` on `TradeCorrect`;
+  `message VenueOrderand { oneof value { SimulationVenueOrderand simulation = 1; } }`,
+  `message SimulationVenueOrderand { fixed64 value = 1; }`. Required by
+  validation in the `strats_v2` wire crate.
+- sim-gw counter crash safety: reserve blocks (store "reserved up to R" in a
+  new snapshot version, save before issuing past R; a v1 file upgrades by
+  resuming after its `last_feed_orderand`). Alternatives: a durable write per
+  event; or the hourly snapshot only (rejected by the agent: reuses values).
+- strats_v2: smallest change maps `VenueOrderand::Simulation` to
+  `SequenceNumber::Generic` in one place; preferred by the user (D5) is an
+  executor tracker keyed by `VenueOrderand` where different variants are an
+  error, possibly built on the prototype's value type.
+- Whether to record the uni-gw orderand field as a knowledge-base decision.

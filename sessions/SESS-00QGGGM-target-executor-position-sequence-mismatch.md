@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-13T09:34:12Z
 title: "Target executor position off by one from mixed sequence numbers"
-summary: "Target executor fills ordered by gateway_receive_time vs sim-gw orderand (ISS-0C0KR). Decided: fills carry the same venue orderand as the feed Fill, required on every execution report, sim-gw orderand a persisted counter not time, keep trade_v2 SequenceNumber for now (D7), demo deployment nuked. Open: counter crash safety (block reservation proposed), uni-gw VenueOrderand proto"
+summary: "Target executor fills ordered by gateway_receive_time vs sim-gw orderand (ISS-0C0KR). Decided: fills carry the same venue orderand as the feed Fill, required on every execution report, sim-gw orderand a persisted counter not time, keep trade_v2 SequenceNumber for now (D7), demo deployment nuked. sim-gw assumed never to crash (D8); ISS-0CHD0 Sim GW Issues pointer + sim-gw ISSUE-0002 covers orderand (D9). Open: uni-gw VenueOrderand proto"
 related_sessions: []
 agents:
   - claude-code:7f074ada-7590-48bd-b348-5fcc0df37972
@@ -200,6 +200,26 @@ the fill's `VenueOrderand::Simulation` maps to `SequenceNumber::Generic` in
 one place. Refines D5: replacing `SequenceNumber` with a tracker keyed by
 `VenueOrderand` is deferred, still the preferred later step.
 
+D8 (2026-10-13). sim-gw is assumed never to crash; it is only for the demo
+and does not need to be highly reliable. The orderand counter simply resumes
+from `last_feed_orderand` in the snapshot (written after init, hourly, and
+on shutdown). The crash window for the orderand is not handled. Rejected for
+now: block reservation and a save per event (the user did not follow how
+block reservation works; it was explained, then made moot by this decision).
+Agent note: a plain counter keeps the v1 meaning of `last_feed_orderand`
+(last value issued), so it may not need a new snapshot version; resuming
+after a time-derived v1 value keeps orderands increasing.
+
+D9 (2026-10-13). sim-gw's ISSUE-0002 is expanded to cover the orderand, next
+to balances and positions: retitled "A Crash Restores State And Orderand From
+The Last Snapshot", with an "Accepted For The Demo" section (uncommitted in
+sim-gw; the record file itself was never committed, only the index row). One
+knowledge-base issue, ISS-0CHD0 "Sim GW Issues", is the central pointer to
+every sim-gw issue: it links the sim-gw issue index and lists ISSUE-0001,
+ISSUE-0002 and the KB issues ISS-0B206, ISS-0C9C9, ISS-0ANA6. Created on
+knowledge-base branch `sim-gw-issues`, not committed; `linear_issue` is the
+LIN-000 placeholder because Linear was not authorized in the session.
+
 ## Agent proposals awaiting the user (not decisions)
 
 - Proto shape (shown as a diff in the notebook): `VenueOrderand venue_orderand = 18`
@@ -207,7 +227,7 @@ one place. Refines D5: replacing `SequenceNumber` with a tracker keyed by
   `message VenueOrderand { oneof value { SimulationVenueOrderand simulation = 1; } }`,
   `message SimulationVenueOrderand { fixed64 value = 1; }`. Required by
   validation in the `strats_v2` wire crate.
-- sim-gw counter crash safety: reserve blocks (store "reserved up to R" in a
+- (Superseded by D8) sim-gw counter crash safety: reserve blocks (store "reserved up to R" in a
   new snapshot version, save before issuing past R; a v1 file upgrades by
   resuming after its `last_feed_orderand`). Alternatives: a durable write per
   event; or the hourly snapshot only (rejected by the agent: reuses values).

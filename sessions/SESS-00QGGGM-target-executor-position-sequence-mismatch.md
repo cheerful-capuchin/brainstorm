@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-13T09:34:12Z
 title: "Target executor position off by one from mixed sequence numbers"
-summary: "Target executor fills ordered by gateway_receive_time vs sim-gw orderand (ISS-0C0KR). Decided: fills carry the same venue orderand as the feed Fill, required on every execution report, sim-gw orderand a persisted counter not time, drop trade_v2 SequenceNumber ideally, demo deployment nuked. Open: counter crash safety (block reservation proposed), uni-gw VenueOrderand proto"
+summary: "Target executor fills ordered by gateway_receive_time vs sim-gw orderand (ISS-0C0KR). Decided: fills carry the same venue orderand as the feed Fill, required on every execution report, sim-gw orderand a persisted counter not time, keep trade_v2 SequenceNumber for now (D7), demo deployment nuked. Open: counter crash safety (block reservation proposed), uni-gw VenueOrderand proto"
 related_sessions: []
 agents:
   - claude-code:7f074ada-7590-48bd-b348-5fcc0df37972
@@ -195,6 +195,11 @@ a field question is settled by D3, the repair question by D6.
 - The executor uses `SequenceNumber` because `trade_v2::MultiAccountPositionTracker`
   takes it on every update; about 34 mentions in `strats_v2/src/target_executor`.
 
+D7 (2026-10-13). For now the executor keeps `trade_v2`'s `SequenceNumber`:
+the fill's `VenueOrderand::Simulation` maps to `SequenceNumber::Generic` in
+one place. Refines D5: replacing `SequenceNumber` with a tracker keyed by
+`VenueOrderand` is deferred, still the preferred later step.
+
 ## Agent proposals awaiting the user (not decisions)
 
 - Proto shape (shown as a diff in the notebook): `VenueOrderand venue_orderand = 18`
@@ -206,8 +211,8 @@ a field question is settled by D3, the repair question by D6.
   new snapshot version, save before issuing past R; a v1 file upgrades by
   resuming after its `last_feed_orderand`). Alternatives: a durable write per
   event; or the hourly snapshot only (rejected by the agent: reuses values).
-- strats_v2: smallest change maps `VenueOrderand::Simulation` to
-  `SequenceNumber::Generic` in one place; preferred by the user (D5) is an
-  executor tracker keyed by `VenueOrderand` where different variants are an
-  error, possibly built on the prototype's value type.
+  The user asked how block reservation works; explained in the notebook with
+  a worked example (snapshot 1,000, crash at 5,000, restart at 10,001). No
+  decision yet.
+- strats_v2: settled by D7 for now.
 - Whether to record the uni-gw orderand field as a knowledge-base decision.

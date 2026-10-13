@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-13T09:34:12Z
 title: "Target executor position off by one from mixed sequence numbers"
-summary: "Target executor fills ordered by gateway_receive_time vs sim-gw orderand (ISS-0C0KR). Decided: fills carry the same venue orderand as the feed Fill, required on every execution report, sim-gw orderand a persisted counter not time, keep trade_v2 SequenceNumber for now (D7), demo deployment nuked. sim-gw assumed never to crash (D8); ISS-0CHD0 Sim GW Issues pointer + sim-gw ISSUE-0002 covers orderand (D9). Open: uni-gw VenueOrderand proto"
+summary: "Target executor fills ordered by gateway_receive_time vs sim-gw orderand (ISS-0C0KR). Decided: fills carry the same venue orderand as the feed Fill, required on every execution report, sim-gw orderand a persisted counter not time, keep trade_v2 SequenceNumber for now (D7), demo deployment nuked. sim-gw assumed never to crash (D8); ISS-0CHD0 Sim GW Issues pointer + sim-gw ISSUE-0002 covers orderand (D9). D10: implementing VenueOrderand/SimulatorOrderand(u64) on VenueResponse+OrderUpdate, Trade and Fill share it; PRs on branch venue-orderand"
 related_sessions: []
 agents:
   - claude-code:7f074ada-7590-48bd-b348-5fcc0df37972
@@ -219,6 +219,20 @@ every sim-gw issue: it links the sim-gw issue index and lists ISSUE-0001,
 ISSUE-0002 and the KB issues ISS-0B206, ISS-0C9C9, ISS-0ANA6. Created on
 knowledge-base branch `sim-gw-issues`, not committed; `linear_issue` is the
 LIN-000 placeholder because Linear was not authorized in the session.
+
+D10 (2026-10-13). Implement it now: a new venue orderand with a
+`SimulatorOrderand` that is a u64. Every venue response must have a venue
+orderand. The Trade and the Fill share the same venue orderand because they
+are the same event: one is the response to the client, the other is the
+venue event. Fix both sim-gw and the target executor, commit, update the
+dev-env notebook, and open pull requests for later review.
+Agent choices within that (not separately confirmed): the field is
+`VenueOrderand venue_orderand = 1` on the `VenueResponse` and `OrderUpdate`
+envelopes (covers every venue response and Trade/TradeCancel/TradeCorrect/
+OrderSnapshot), `message VenueOrderand { oneof value { SimulatorOrderand
+simulator = 1; } }`, `message SimulatorOrderand { uint64 value = 1; }` in
+uni-gw types.proto; `GatewayResponse` gets none (gateway, not venue). Branch
+`venue-orderand` in msg-schemas, messaging, sim-gw, strats_v2.
 
 ## Agent proposals awaiting the user (not decisions)
 

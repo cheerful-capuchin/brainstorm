@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-13T09:34:12Z
 title: "Target executor position off by one from mixed sequence numbers"
-summary: "Target executor fills ordered by gateway_receive_time vs sim-gw orderand (ISS-0C0KR). Decided: fills carry the same venue orderand as the feed Fill, required on every execution report, sim-gw orderand a persisted counter not time, keep trade_v2 SequenceNumber for now (D7), demo deployment nuked. sim-gw assumed never to crash (D8); ISS-0CHD0 Sim GW Issues pointer + sim-gw ISSUE-0002 covers orderand (D9). D10: implementing VenueOrderand/SimulatorOrderand(u64) on VenueResponse+OrderUpdate, Trade and Fill share it; PRs msg-schemas#32 messaging#53 sim-gw#17 strats_v2#14 knowledge-base#142"
+summary: "Target executor fills ordered by gateway_receive_time vs sim-gw orderand (ISS-0C0KR). Decided: fills carry the same venue orderand as the feed Fill, required on every execution report, sim-gw orderand a persisted counter not time, keep trade_v2 SequenceNumber for now (D7), demo deployment nuked. sim-gw assumed never to crash (D8); ISS-0CHD0 Sim GW Issues pointer + sim-gw ISSUE-0002 covers orderand (D9). D10: implementing VenueOrderand/SimulatorOrderand(u64) on VenueResponse+OrderUpdate, Trade and Fill share it; PRs msg-schemas#32 messaging#53 sim-gw#17 strats_v2#14 knowledge-base#142; ISS-0CK0R engine panic snapshot (open, via engine abstraction)"
 related_sessions: []
 agents:
   - claude-code:7f074ada-7590-48bd-b348-5fcc0df37972
@@ -249,6 +249,18 @@ Left: sim-gw internal trackers still sequence by time; TradeCancel orderand
 validated but unused; ISS-0CHD0 Linear ticket; a pre-existing unrelated
 msg-schemas change (CreateOrderGatewayAccepted moved) sits in `git stash` in
 msg-schemas.
+
+D11 (2026-10-14, sim-gw#17 review). The user asked why there are no panic
+and shutdown hooks that make the engine dump its snapshot. Findings: SIGTERM
+already triggers `send_shutdown_msg` and `snapshot_before_shutdown(true)`;
+the process-wide panic hook in sim-gw `main.rs` exits without a snapshot; a
+panic on the engine thread can leave half-applied state; OOM/SIGKILL run no
+hook. Decision: no change in sim-gw#17. A separate knowledge-base issue,
+ISS-0CK0R "Engine Skips The Shutdown Snapshot When A Thread Panics"
+(branch `engine-panic-snapshot`, LIN-000). The user does not want thread-name
+matching scattered around; panic handling should go through the engine
+abstraction, set up when the engine is built or started. The design is open:
+the user wants to think about it.
 
 ## Agent proposals awaiting the user (not decisions)
 

@@ -256,7 +256,7 @@ already triggers `send_shutdown_msg` and `snapshot_before_shutdown(true)`;
 the process-wide panic hook in sim-gw `main.rs` exits without a snapshot; a
 panic on the engine thread can leave half-applied state; OOM/SIGKILL run no
 hook. Decision: no change in sim-gw#17. A separate knowledge-base issue,
-ISS-0CK0R "Engine Skips The Shutdown Snapshot When A Thread Panics"
+ISS-0CK0R "Engine Skips The Shutdown Snapshot When A Thread Panics" (knowledge-base#152)
 (branch `engine-panic-snapshot`, LIN-000). The user does not want thread-name
 matching scattered around; panic handling should go through the engine
 abstraction, set up when the engine is built or started. The design is open:

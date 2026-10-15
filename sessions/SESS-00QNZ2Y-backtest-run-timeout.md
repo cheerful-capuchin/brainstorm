@@ -1,0 +1,105 @@
+---
+create_time: 2026-10-15T11:13:34Z
+title: "Backtest run timeout chosen per backtest, 1 day by default"
+summary: "Backtest bt_02WAQZSE80400 failed (alert 0.odu7kumvg7f4); user asked for a per-backtest run timeout, default 1 day (D1). run_timeout ISO 8601 on create, P1D default, max 7 days (D2); stored in strategy_config Avro as run_timeout_s default 86400, no column (D3); carried workflow input -> trigger_job -> job template timeout_s, replaces global backtest_timeout_s, renamed backtest_default_run_timeout_s (D4); watchdog jobTimeout assert removed (D5). Uncommitted in structure-web, infra (alerts-through-logs branch), application-server-client (hand-patched internal client, needs regen). Front end not done."
+related_sessions:
+  - SESS-00Q1C5S
+  - SESS-00PXT2F
+  - SESS-00QKS30
+agents:
+  - claude-code:50b36073-7701-490d-807d-256f873e7cc7
+---
+
+# SESS-00QNZ2Y: Backtest run timeout chosen per backtest, 1 day by default
+
+## Trigger (2026-10-15)
+
+Alert `backtest-failed` (Cloud Monitoring incident `0.odu7kumvg7f4`, condition
+"a backtest failed", application-server revision `application-server-00014-x56`,
+asia-northeast1): backtest `bt_02WAQZSE80400` of strategy `strt_02VXXHM080400`,
+user `02AJE7QH00400`. The user pointed at `BacktestService.create` in
+`structure-web/packages/api/src/backtests/backtests-service.ts` and asked to let
+the user choose the backtest run timeout, with 1 day as the default.
+
+The cause was not confirmed: `gcloud logging read` for the job
+`...-bt-02waqzse80400` returned nothing. The user's request implies the
+backtest ran into the one hour job timeout.
+
+## State before
+
+- One server-wide `backtest_timeout_s: 3600` (api config + infra
+  `infra/services/application-server/application-server.ts`) set the Cloud Run
+  job task timeout for every backtest, in the job template built by
+  `BacktestService.buildCloudRunJobTemplate` (internal endpoint the activity
+  worker calls in `trigger_job`). The runner got `--run-timeout-ms` 60 s less
+  (`RUNNER_TIMEOUT_MARGIN_S`).
+- The stall watchdog (`failStalledRuns`, `STALLED_RUN_AFTER` 3 h, ISS-0BWVR)
+  asserted that its limit exceeds the job timeout.
+
+## Decisions
+
+### D1: The user picks the run timeout per backtest; default 1 day
+
+User's request. The default stays a server setting.
+
+### D2: Public field `run_timeout`, ISO 8601 duration
+
+- `CreateBacktestBody.run_timeout`, optional, ISO 8601 duration of days, hours,
+  minutes and whole seconds (`P1D`, `PT6H`), following the API RFC duration
+  rule. Parsed by the same parser as execution delays (renamed
+  `parseDuration`/`formatDuration` in `backtest-http.ts`) plus a whole-seconds
+  check.
+- Bounds: longer than 60 s (runner margin) and at most 7 days (Cloud Run job
+  task limit, 168 h), `BacktestService.resolveRunTimeout` /
+  `MAX_RUN_TIMEOUT`. Violations are `InvalidArgument` on field `run_timeout`.
+- `BacktestRepresentation.run_timeout` serves it back in seconds form
+  (`PT86400S`).
+- NATS create (`backtests-adapter.ts`) has no wire field; it gets the default.
+
+### D3: Stored in `strategy_config`, not a column
+
+`schema.ts` says a new run setting is a field of `StrategyConfig`, not a column
+(DEC-0C6J2 Avro blobs). Added `run_timeout_s` (long, default 86400) to the
+`StrategyConfig` Avro schema and `runTimeout: Second` to `StrategyConfig.T`.
+Blobs written before the field read back with 1 day, so re-running an old
+failed backtest (such as `bt_02WAQZSE80400`) gets the longer timeout. A test
+encodes with the previous schema and checks the default.
+
+### D4: Carried through the workflow; global setting becomes the default
+
+`BacktestInput.cloudrun_job_timeout_s` (from the stored config) ->
+`TriggerJobIn.cloudrun_job_timeout_s` -> `BuildCloudRunJobTemplateRequest.timeout_s`
+-> job `timeout` and runner `--run-timeout-ms`. Config key renamed
+`backtest_timeout_s` -> `backtest_default_run_timeout_s` (86400, bounds
+(60, 604800]) in the api config and infra. No backwards compatibility: an
+in-flight workflow whose input lacks the field fails at deploy and the
+watchdog marks it failed.
+
+### D5: Watchdog no longer tied to the job timeout
+
+Each `poll_execution` commit updates the backtest's `update_time`, so a long
+run is not stalled. Removed `FailStalledRunsArgs.jobTimeout` and its assertion;
+comment explains the polling.
+
+## Status (2026-10-15, uncommitted)
+
+- structure-web (main): api, app-db, workflow, activity-worker changes and
+  tests. Typecheck passes (besides pre-existing data-feed-definitions codec
+  errors in `backtests-adapter.ts`/`strategies-adapter.ts`). Passing:
+  strategy-config, backtests-service (new `resolveRunTimeout` table test),
+  run-lifecycle/repository/archive (Postgres), activity-worker. Not loadable
+  locally: `backtest-http.test.ts`, `backtests-adapter.test.ts` (local codec
+  lacks `LoggingTrigger`).
+- infra: config key renamed on branch `alerts-through-logs` (working tree).
+- application-server-client: `timeout_s` hand-added to the internal
+  `types.gen.ts`/`zod.gen.ts`; needs `just generate_client` against a running
+  server (also brings `run_timeout` to public/front-end clients).
+- Root workspace `pnpm-lock.yaml` was rewritten by an install triggered by
+  `pnpm exec` (synced an already-declared codec dependency).
+
+## Open
+
+- Front end (`stxr-client-app`): no `run_timeout` input yet; waits for the
+  client regeneration.
+- Deploy order: api config + infra key rename must ship together, or the api
+  refuses its config.

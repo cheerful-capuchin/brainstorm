@@ -111,6 +111,38 @@ column, a new Avro schema and new types in strategy-core.
 - Workflow and template contract unchanged from D4:
   `cloudrun_job_timeout_s` from `backtest.jobConfiguration.timeout`.
 
+### D7: One ISO 8601 duration parser, in ts-core
+
+The user asked why `backtest-http.ts` had its own duration parser instead of
+`parseDuration` in ts-core (`packages/core/src/lib/time.ts`). It was written in
+structure-web fcc402776 (cheerful-capuchin, 2026-09-26) and changed in
+82cb17b7b (grumpy-gorilla, 2026-09-28); I extended it instead of checking core.
+The core parser was unanchored (`abcP1Dxyz` parsed), took `P1DT`, and allowed
+a fraction on a non-smallest unit.
+
+User's direction: fix the core parser with table and property tests; keep the
+components as written (`years, months, weeks, days, hours, minutes, seconds`)
+and add `nanos` as the fraction of a second (like `Timestamp.T`). Rejected
+along the way: returning only seconds + nanos.
+
+- `parseDuration` anchored; `T` needs a time component; fraction only on the
+  smallest time unit, up to 9 digits; a fraction of an hour or minute is
+  spread exactly into the smaller units (`PT1.5H` = 1 h 30 min); counts up to
+  `Number.MAX_SAFE_INTEGER`.
+- New: `Duration_nil`, `formatDuration` (canonical, round-trips),
+  `durationToNanos` (error for years/months: no fixed length),
+  `durationFromNanos` (seconds + nanos only). `durationToSeconds` kept (naive).
+- Tests: table of valid and rejected texts, properties for format round trip,
+  components summing to the span, surrounding text rejected, nanos round trip.
+  Removing the anchors makes two of them fail. fast-check 4.7.0 added as a dev
+  dependency of `@structure/core`.
+- structure-web `backtest-http.ts` uses the core helpers for execution delays
+  and the job timeout; its local parser and formatter are gone. Weeks and
+  fractional hours/minutes are now accepted for delays too.
+- Found: an uncommitted ts-core edit `Second = z.coerce.number().positive()`
+  (not mine) makes `Timestamp.nil()` fail `Timestamp.T`; backtest repository
+  tests go 8 pass / 11 fail with it.
+
 ## Status (2026-10-15, uncommitted)
 
 After D6: strategy-core `ts/src/entities/backtest/backtest.ts` changed on main

@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-15T11:13:34Z
 title: "Backtest run timeout chosen per backtest, 1 day by default"
-summary: "Backtest bt_02WAQZSE80400 failed (alert 0.odu7kumvg7f4); user asked for a per-backtest run timeout, default 1 day (D1). run_timeout ISO 8601 on create, P1D default, max 7 days (D2); stored in strategy_config Avro as run_timeout_s default 86400, no column (D3); carried workflow input -> trigger_job -> job template timeout_s, replaces global backtest_timeout_s, renamed backtest_default_run_timeout_s (D4); watchdog jobTimeout assert removed (D5). Uncommitted in structure-web, infra (alerts-through-logs branch), application-server-client (hand-patched internal client, needs regen). Front end not done."
+summary: "Backtest bt_02WAQZSE80400 failed (alert 0.odu7kumvg7f4); user asked for a per-backtest timeout, default 1 day (D1). D6 (supersedes D2-D4 storage/naming): timeout lives in a separate BacktestJobConfiguration (job environment, not the strategy binary): strategy-core Backtest.BacktestJobConfiguration { timeout } on Backtest.T, Avro structure.app_db.BacktestJobConfiguration, column backtests.job_configuration (migration fills old rows with 1 day), API job_configuration.timeout ISO 8601 (max 7 days), config backtest_default_job_timeout_s. Workflow carries cloudrun_job_timeout_s -> template timeout_s; watchdog jobTimeout assert removed (D5). Uncommitted in strategy-core, structure-web, infra (alerts-through-logs), application-server-client (hand-patched internal client). Front end not done."
 related_sessions:
   - SESS-00Q1C5S
   - SESS-00PXT2F
@@ -56,7 +56,7 @@ User's request. The default stays a server setting.
   (`PT86400S`).
 - NATS create (`backtests-adapter.ts`) has no wire field; it gets the default.
 
-### D3: Stored in `strategy_config`, not a column
+### D3 (superseded by D6): Stored in `strategy_config`, not a column
 
 `schema.ts` says a new run setting is a field of `StrategyConfig`, not a column
 (DEC-0C6J2 Avro blobs). Added `run_timeout_s` (long, default 86400) to the
@@ -81,7 +81,47 @@ Each `poll_execution` commit updates the backtest's `update_time`, so a long
 run is not stalled. Removed `FailStalledRunsArgs.jobTimeout` and its assertion;
 comment explains the polling.
 
+### D6: A separate `BacktestJobConfiguration`, own column, own Avro type
+
+User reviewed D3 and rejected it: the timeout has no relation to the binary
+being executed, only to the environment it runs in, so it does not belong in
+`StrategyConfig`. They asked for a separate `BacktestJobConfiguration`, a new
+column, a new Avro schema and new types in strategy-core.
+
+- strategy-core: `Backtest.BacktestJobConfiguration` `{ timeout: Second }`
+  (positive whole seconds) and `jobConfiguration` on `Backtest.T`. Bounds stay
+  in structure-web: the 60 s runner margin and the 7 day Cloud Run limit belong
+  to the service that runs the job.
+- app-db: Avro `structure.app_db.BacktestJobConfiguration` `{ timeout_s: long }`
+  (fingerprint d123d505ba409ff2), column `backtests.job_configuration`
+  (schema.ts comment: strategy_config = settings of the binary,
+  job_configuration = settings of the job). Migration
+  `20261015112920_backtest_job_configuration` adds the column with a temporary
+  default of the encoded `{ timeout_s: 86400 }` and drops it, so existing
+  backtests rerun with 1 day; a test decodes the literal. Debug view shows its
+  fingerprint.
+- `StrategyConfig` and its Avro schema are back to before (no `run_timeout_s`).
+- api: `CreateRequest.jobConfiguration` (`JobConfigurationRequest`, every value
+  optional), `resolveJobConfiguration` (defaults + bounds, field
+  `job_configuration.timeout`), `Config.defaultJobConfiguration`,
+  `MAX_JOB_TIMEOUT`. HTTP `job_configuration: { timeout }` on create
+  (`BacktestJobConfiguration`) and on the representation
+  (`BacktestJobConfigurationRepresentation`, `PT86400S` form). Config key
+  `backtest_default_job_timeout_s` (api yaml + infra).
+- Workflow and template contract unchanged from D4:
+  `cloudrun_job_timeout_s` from `backtest.jobConfiguration.timeout`.
+
 ## Status (2026-10-15, uncommitted)
+
+After D6: strategy-core `ts/src/entities/backtest/backtest.ts` changed on main
+(needs a PR, then structure-web's strategy-core pin). structure-web: api,
+app-db (+ migration), workflow, activity-worker. Typecheck clean (besides the
+pre-existing codec errors). Passing: backtests-service (resolveJobConfiguration
+table test), strategy-config, run-lifecycle/repository/archive (Postgres),
+debug-schema, app-db avro (migration literal), activity-worker, strategy-core
+backtest tests.
+
+Before D6:
 
 - structure-web (main): api, app-db, workflow, activity-worker changes and
   tests. Typecheck passes (besides pre-existing data-feed-definitions codec

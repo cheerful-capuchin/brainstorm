@@ -143,6 +143,19 @@ along the way: returning only seconds + nanos.
   (not mine) makes `Timestamp.nil()` fail `Timestamp.T`; backtest repository
   tests go 8 pass / 11 fail with it.
 
+### D8: backtest-http keeps no duration code of its own
+
+User asked to remove the remaining wrappers (`parseFixedSpan`, `formatSpan`).
+Call sites now chain the core `parseDuration`, `durationToNanos`,
+`durationFromNanos`, `formatDuration`; core error messages became plain
+sentences used as field descriptions. User fixed `Second` as
+`z.coerce.number().int()` and set the timeout to `Second.positive()`. After the
+user rebased data-feed-definitions `feed-catalog-v2` onto main, the HTTP and
+adapter tests load: the old "weeks are not supported" delay case (a limit of the
+old local parser) became "fraction on days" and "text after the duration";
+19/19 pass. Remaining api tsc error: the rebased codecs need
+`@structure/structure-api`, not installed yet (root `pnpm install`).
+
 ## Status (2026-10-15, uncommitted)
 
 After D6: strategy-core `ts/src/entities/backtest/backtest.ts` changed on main

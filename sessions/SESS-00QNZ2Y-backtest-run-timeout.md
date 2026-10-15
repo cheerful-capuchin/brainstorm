@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-15T11:13:34Z
 title: "Backtest run timeout chosen per backtest, 1 day by default"
-summary: "Backtest bt_02WAQZSE80400 failed (alert 0.odu7kumvg7f4); user asked for a per-backtest timeout, default 1 day (D1). D6 (supersedes D2-D4 storage/naming): timeout lives in a separate BacktestJobConfiguration (job environment, not the strategy binary): strategy-core Backtest.BacktestJobConfiguration { timeout } on Backtest.T, Avro structure.app_db.BacktestJobConfiguration, column backtests.job_configuration (migration fills old rows with 1 day), API job_configuration.timeout ISO 8601 (max 7 days), config backtest_default_job_timeout_s. Workflow carries cloudrun_job_timeout_s -> template timeout_s; watchdog jobTimeout assert removed (D5). Uncommitted in strategy-core, structure-web, infra (alerts-through-logs), application-server-client (hand-patched internal client). Front end not done."
+summary: "PRs: ts-core#16, strategy-core#18, application-server-client#17 (needs regen), structure-web#185, infra#37. Backtest bt_02WAQZSE80400 failed (alert 0.odu7kumvg7f4); user asked for a per-backtest timeout, default 1 day (D1). D6 (supersedes D2-D4 storage/naming): timeout lives in a separate BacktestJobConfiguration (job environment, not the strategy binary): strategy-core Backtest.BacktestJobConfiguration { timeout } on Backtest.T, Avro structure.app_db.BacktestJobConfiguration, column backtests.job_configuration (migration fills old rows with 1 day), API job_configuration.timeout ISO 8601 (max 7 days), config backtest_default_job_timeout_s. Workflow carries cloudrun_job_timeout_s -> template timeout_s; watchdog jobTimeout assert removed (D5). Uncommitted in strategy-core, structure-web, infra (alerts-through-logs), application-server-client (hand-patched internal client). Front end not done."
 related_sessions:
   - SESS-00Q1C5S
   - SESS-00PXT2F
@@ -155,6 +155,18 @@ adapter tests load: the old "weeks are not supported" delay case (a limit of the
 old local parser) became "fraction on days" and "text after the duration";
 19/19 pass. Remaining api tsc error: the rebased codecs need
 `@structure/structure-api`, not installed yet (root `pnpm install`).
+
+### D9: Committed and in PRs (2026-10-15)
+
+Merge order: ts-core#16 (durations, integer Second) -> strategy-core#18
+(BacktestJobConfiguration) -> application-server-client#17 (hand-written
+timeout_s; regenerate against structure-web#185 before merging) ->
+structure-web#185 (branch backtest-job-configuration from origin/main; the
+user's e2e edits stay uncommitted in the working tree). infra#37
+(`backtest_default_job_timeout_s: 86400`) as a PR, not a push to main, because
+it must deploy with the api release; the line was moved off the
+alerts-through-logs working tree. Open: watchdog does not cancel the Cloud Run
+execution of a backtest it fails; front end has no input yet.
 
 ## Status (2026-10-15, uncommitted)
 

@@ -35,9 +35,53 @@ agents:
   - a WAL plus a single merging process, or a NATS message per uploaded file
     plus a collector that keeps a file or a database.
 
-## Open questions
+## Findings (2026-10-15, research agents; facts, not decisions)
 
-(filled in as the conversation goes)
+- Bucket layout (REF:databento-market-data, DEC-0BPWJ R14):
+  `data/databento/{dataset}/{schema}/{InstrumentId}/{YYYY-MM-DD}.dbn.zst`,
+  one object per (dataset, schema, contract, UTC day). Uploads are
+  create-only (`ifGenerationMatch=0`), so objects are immutable. No custom
+  object metadata today; listing reads only `items(name)`.
+- The three states already exist in the bucket: object with records = data,
+  header-only object (62 bytes, no symbol) = no activity, no object = not
+  downloaded (replay planner fails with `HistPlanError::MissingFile`).
+  "Missing" has no stored form; the job's planner derives expected
+  (market, schema, day) from market-info per run.
+- The job copies bytes and decodes only the DBN header. Databento's batch API
+  gives byte size + sha256 per file, record_count only per job, so per-file
+  record counts need a decode pass.
+- Writers: scheduled `databento-download-job` (1 task, 8 workers, */30 6-14),
+  `databento-backfill-job`, local `just backfill` driver (up to 10k tasks).
+  Day sharding within an execution; scheduled and backfill jobs may race on
+  the same key, safe only due to create-only uploads.
+- Backfill counted 892,458 objects (1.41 GB), ~60% header-only.
+- No JetStream (core NATS only, DEC-08T3R), no GCS Pub/Sub object
+  notifications, no BigQuery. Postgres belongs to application-server only
+  (REF:application-db). ClickHouse (timeseries-db) has no file table.
+- Tick = one DBN record in the window, k-way merged across routes by
+  timestamp; mbp1 and trade source events share one MBP-1 file per
+  instrument. Whole first day is decoded from midnight even when the start is
+  mid-day; reading stops at the stop time. Status seed reads up to 7 prior
+  days.
+- `strategy.backtest.summary` logs `feed_ticks`, `replay_elapsed_ms`,
+  `avg_ns_per_feed_tick` (run.rs). PLAN-0BRQ8 local measurement: ~1.9 µs per
+  tick (ESU6 MBP-1, 2 days, macOS arm64), vs the user's 30 µs (cloud).
+- structure-web `BacktestService.create` knows identities/sourceEvents but
+  not the Rust route-to-schema plan (`plan.rs`, `hist_replay.rs`).
+
+## Open questions (proposals put to the user, nothing decided)
+
+- Where per-file stats live: GCS custom metadata on the object itself
+  (proposed) vs a database/index file.
+- Who counts: download job tees the stream through a zstd/DBN decoder and
+  patches metadata after finalize (proposed) vs a separate indexer fed by GCS
+  object notifications.
+- Granularity: per-day total plus 24 hourly counts (proposed) for mid-day
+  windows.
+- Whether a queryable index (e.g. ClickHouse table) is needed now, or later
+  as a rebuildable projection of the bucket.
+- Where the estimate is computed (TS server lacks the Rust plan).
+- Per-tick cost: one global 30 µs vs calibrated from actual runs per strategy.
 
 ## Note on agents (2026-10-15)
 

@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-19T11:02:39Z
 title: "notify-gw alert flood: throttling, mute command, burst handling"
-summary: "Weekend 2026-10-16..19 Discord flood was a notify-gw delivery failure, not alert volume: pool stuck full, feed-ingress nacked on tickets_full -> ~200 Pub/Sub redeliveries/s, ~12 GB/day of warning logs, ~1 Discord post per 6 min. D1 alerts sub seeked to 2026-10-19T10:11:29Z (~560 dropped). D2 implemented, uncommitted in monitoring + infra: one Discord send at a time, 429 not an attempt, throttle (feed+service+event+first tag, 1 h window, summary post), per-message logs limited to 1/min, feed-ingress waits for a ticket instead of nacking, retryPolicy 10s-600s. D3 mute triggered from a phone via a cloud agent (or admin dashboard), backend = Pub/Sub control topic; open. D4 decided and implemented (uncommitted): lossy compression toward Discord (post budget 6/min, digest per minute, stale after 10 min by Pub/Sub publish time), full alert data stored elsewhere (ClickHouse or similar; storage design open). sim-gw logged 231 GB on 10-13..15."
+summary: "Weekend 2026-10-16..19 Discord flood was a notify-gw delivery failure, not alert volume: pool stuck full, feed-ingress nacked on tickets_full -> ~200 Pub/Sub redeliveries/s, ~12 GB/day of warning logs, ~1 Discord post per 6 min. D1 alerts sub seeked to 2026-10-19T10:11:29Z (~560 dropped). D2 implemented, uncommitted in monitoring + infra: one Discord send at a time, 429 not an attempt, throttle (feed+service+event+first tag, 1 h window, summary post), per-message logs limited to 1/min, feed-ingress waits for a ticket instead of nacking, retryPolicy 10s-600s. D3 mute triggered from a phone via a cloud agent (or admin dashboard), backend = Pub/Sub control topic; open. D4 decided: lossy compression toward Discord, full alert data stored elsewhere (ClickHouse or similar; storage design open). D5: at most one post a minute; under load the cadence backs off 1 min -> 5 min -> 15 min -> 1 h and steps down after quiet windows; a lone waiting alert is posted in full, two or more become one digest (replaces the 6/min budget). sim-gw logged 231 GB on 10-13..15."
 related_sessions:
   - SESS-00R0BCD
   - SESS-00R0C3Y
@@ -248,6 +248,70 @@ passes):
 - Config `digest: { posts_per_minute: 6, interval_ms: 60000,
   stale_after_ms: 600000, kinds_max: 32 }`, all optional. The README, crate
   docs and the example config are updated.
+
+### D5: at most one post a minute, and the cadence backs off under load
+
+User: "I would say at most 1 a minute. There is rarely something so critical
+that it requires the fix within the same minute. And if there are too many
+events still, we backoff further and compress them further. e.g. if for the
+last 5 minutes we got a bunch of events, then compress them to 5 mins, then
+15 mins, then hour. Pinging me 6 times a minute or every minute is not
+helpful. If there is a burst, I won't be able to react quick enough and it
+will just annoy me more."
+
+Replaces the 6 posts/min budget of D4 (rejected: too many pings during a
+burst). Design implemented by the agent:
+- One outbox, one post per cadence window. The cadence ladder is
+  1 min -> 5 min -> 15 min -> 1 h (config `digest.cadence_ms`).
+- An alert that arrives while no post is owed and the window is over is
+  posted at once, in full. Otherwise it waits in the outbox.
+- When the window ends:
+  - Exactly one alert waiting: posted in full (its body was kept).
+  - Two or more: one digest, and the cadence steps up one level.
+  - A window that posted a single alert, or ended empty, steps the cadence
+    down one level.
+  - So after a burst it takes 1 h + 15 min + 5 min of quiet to get back to
+    1 min.
+- Throttle summaries go into the outbox as counts; they are never posted
+  on their own.
+- Stale alerts (D4) go into the outbox and are never posted alone.
+
+Implemented (uncommitted, monitoring; `just check notify-gw feed-ingress`
+passes), replacing the D4 budget code (`logic/budget.rs` deleted):
+- `logic/digest.rs`:
+  - `DigestPolicy { cadence_ms: [NonZeroU32; 8], cadence_len,
+    stale_after_ms, kinds_max }` and `Cadence { level, window_ends_at }`.
+  - `DigestData` holds the policy, the cadence, the `DigestTable`, a
+    `held` flag plus `held_body` (the full post of a lone waiting alert,
+    BODY_CAPACITY reserved), `window_armed` and the digest text.
+- Feed path (`Intake::take`):
+  - Repeats go to the throttle.
+  - A fresh alert is posted at once when the window is over and the outbox
+    is empty (the window restarts at the current level). Otherwise it waits
+    and is acked; it is kept in full when it is the outbox's first.
+  - Waiting alerts open no throttle window.
+- `TimerCtx::DigestWindow` (id u64::MAX-1) is armed while the outbox owes a
+  post or level > 0. When it fires:
+  - Early (a post moved the window's end): re-arm.
+  - Empty: step down and start a new window.
+  - Otherwise: the lone held alert, or a digest. A digest steps up; a lone
+    alert steps down. Retries after 5 s when no delivery is free.
+- The digest text says "Busy: the next post comes in 15 min at the
+  earliest." when level > 0.
+- Throttle summaries are no longer posted. At window end the repeat count
+  goes into the outbox (`digest::count`); `ThrottleSummaryNotice` was
+  removed.
+- Config: `digest: { cadence_ms: [60000, 300000, 900000, 3600000],
+  stale_after_ms: 600000, kinds_max: 32 }`. Validation: 1-8 steps, never
+  shorter up the ladder. The e2e config uses `cadence_ms: [1]`.
+- Tests:
+  - Unit tests cover the table.
+  - The delivery tests run with a 1 ms cadence and space their alerts.
+  - The cadence tests use the production ladder: calm posting, a lone alert
+    in full, the climb 1->5->15->60->60 min and back down 60->15->5->idle,
+    the digest text, and stale alerts.
+- Open: should a burst of *different* alerts also climb when only one
+  arrives per window (it does not)? Is one alert per window "calm"?
 
 ## Open for the next discussion (digests and alert storage)
 

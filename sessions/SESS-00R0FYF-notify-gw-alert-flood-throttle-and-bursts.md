@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-19T11:02:39Z
 title: "notify-gw alert flood: throttling, mute command, burst handling"
-summary: "Weekend 2026-10-16..19 Discord flood was a notify-gw delivery failure, not alert volume: pool stuck full, feed-ingress nacked on tickets_full -> ~200 Pub/Sub redeliveries/s, ~12 GB/day of warning logs, ~1 Discord post per 6 min. D1 alerts sub seeked to 2026-10-19T10:11:29Z (~560 dropped). D2 implemented, uncommitted in monitoring + infra: one Discord send at a time, 429 not an attempt, throttle (feed+service+event+first tag, 1 h window, summary post), per-message logs limited to 1/min, feed-ingress waits for a ticket instead of nacking, retryPolicy 10s-600s. D3 mute triggered from a phone via a cloud agent (or admin dashboard), backend = Pub/Sub control topic; open. Proposed, not decided: global post budget + digest mode + stale-alert folding; alert storage open for discussion. sim-gw logged 231 GB on 10-13..15."
+summary: "Weekend 2026-10-16..19 Discord flood was a notify-gw delivery failure, not alert volume: pool stuck full, feed-ingress nacked on tickets_full -> ~200 Pub/Sub redeliveries/s, ~12 GB/day of warning logs, ~1 Discord post per 6 min. D1 alerts sub seeked to 2026-10-19T10:11:29Z (~560 dropped). D2 implemented, uncommitted in monitoring + infra: one Discord send at a time, 429 not an attempt, throttle (feed+service+event+first tag, 1 h window, summary post), per-message logs limited to 1/min, feed-ingress waits for a ticket instead of nacking, retryPolicy 10s-600s. D3 mute triggered from a phone via a cloud agent (or admin dashboard), backend = Pub/Sub control topic; open. D4 decided and implemented (uncommitted): lossy compression toward Discord (post budget 6/min, digest per minute, stale after 10 min by Pub/Sub publish time), full alert data stored elsewhere (ClickHouse or similar; storage design open). sim-gw logged 231 GB on 10-13..15."
 related_sessions:
   - SESS-00R0BCD
   - SESS-00R0C3Y
@@ -199,6 +199,55 @@ Agent's answer:
 Asked: implement the budget + digest mode (6 posts/min, stale after 10 min,
 both config)? No answer yet. The user wants to discuss digests and alert
 storage with another agent first.
+
+### D4: lossy compression toward Discord, full data stored elsewhere (decided)
+
+User: "yeah, definitely. That's the only way to handle it - by using a lossy
+compression and then having access to the actual data being stored somewhere
+in clickhouse or something."
+
+- Discord gets a lossy view: global post budget, digest mode past it,
+  alerts that waited too long folded into the digest (the proposal above).
+- Every alert is kept in queryable storage, ClickHouse or similar. Which
+  store, how it is written (event-gw, a direct consumer of the feeds topic, a
+  BigQuery subscription) and how a digest links to the stored alerts are
+  open (Q2).
+- Agent implements the budget + digest mode in notify-gw with config
+  defaults (6 posts/min, digest every minute, stale after 10 min by Pub/Sub
+  publish time). The digest's content and format can still change with Q1.
+
+Implemented (uncommitted, monitoring; `just check notify-gw feed-ingress`
+passes):
+- `logic/budget.rs` `PostBudget`: generic cell rate. One `paid_until`
+  timestamp, a burst of `posts_per_minute`, then one per 60 s /
+  posts_per_minute. Single alert posts and throttle summaries spend it;
+  digests do not.
+- `logic/digest.rs` `DigestTable`: fixed `kinds_max` slots keyed by
+  `ThrottleKey`, with counts and cut event/service text. Kinds beyond the
+  table are counted unnamed. `write_text` gives a header ("N alerts between
+  T1 and T2 were not posted one by one."), up to 10 busiest kinds
+  ("• event (service) × n", ties to the first arrived), then "• other
+  alerts × rest". A line that does not fit is left out whole.
+- The digest post: title `notify_gw.digest`, tag `digest` (grey), service
+  `notify-gw`, no help_url yet. Linking to the alert store is the place for
+  Q2.
+- Flush: `TimerCtx::DigestFlush` (timer id u64::MAX-1), armed one interval
+  after the first folded alert. It uses the summary delivery slots and
+  retries after 5 s when none is free.
+- Feed path (`Intake::take`): repeats go to the throttle first. A would-be
+  post is folded when stale or over budget, and a folded alert opens no
+  throttle window. Otherwise: delivery free check, write, spend, open
+  window.
+- Staleness uses only the Pub/Sub `publish_time`. A message without one
+  (NATS) is never stale. The alert's own time is not used, because a
+  closing incident carries its start time.
+- Throttle sweep: a summary over budget is folded into the digest with its
+  repeat count.
+- Draining ignores DigestFlush. `drain.started` logs
+  `digest_alerts_dropped`.
+- Config `digest: { posts_per_minute: 6, interval_ms: 60000,
+  stale_after_ms: 600000, kinds_max: 32 }`, all optional. The README, crate
+  docs and the example config are updated.
 
 ## Open for the next discussion (digests and alert storage)
 

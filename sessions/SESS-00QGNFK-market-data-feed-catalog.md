@@ -1,16 +1,22 @@
 ---
 create_time: 2026-10-13T10:58:59Z
 title: "Catalog of canonical market data feeds: definitions, feed ids, codecs"
-summary: "Catalog of canonical market data feeds joining data-feed-core, the code generator prototype and the handrolled codecs. D1-D12: code not declarations for vendor wire/adapt, generated domain event traits + FlatBuffers for bridges and our infra, immutable numbered codec revisions with fixtures, generated dispatch per program, no combined feed id, cadence in the kind id, formal NATS/PubSub sources + file source table, persister reads our live data. D13-D16 from the user summary (round 20): kind template content, feed = template with subject values, source templates filled at config level, DSL generates Rust/TS/Python records. Round 20 correction (proposed): a format is a named, versioned byte layout of its own, implemented by many codec revisions; adapters per (kind, format); dispatch keyed by (kind, format). Encoding of our own events: generated per-kind FlatBuffers format, encoder, codec and adapter. Notebook feed-catalog-e2e rewritten. D17: format ids from typed provider descriptors via SemanticHash (round 23 accepted). D18: Rust + macros for now, DSL later. D19: no coverage rule on the kind. D20: this iteration covers what/where (catalog + feed list lookup), views, events and the one-way Rust->TS bridge for OHLCV bars only; protocol, dynamism, sources, codecs/adapters/dispatch left for later. Round 25: cadence per event entry of a kind; no URIs (format id from descriptor, code located by Cargo, codec->format link by trait impls); coverage explained. Round 24: DSL sketch of types, events, formats, kinds. Round 23 detail: user wants format ids reproducible from provider-specific versioning (DBN v3/v4, CME MDP3 schema 1 v13, GCP schema 1.2) through a semantic hash trait, labels as source only; agent agrees with typed per-provider descriptors (vendor version + byte-changing options, nested for envelopes), hand-written hash mapping with pinned vectors, ids precomputed into generated records, ledger check, local revision escape hatch."
+summary: "Catalog of canonical market data feeds: views (shared shapes), events (meaning + cadence), formats (versioned byte layouts, ids from provider descriptors, D17), feed kinds (templates) and feeds (kind + subject, built by a script from market-info). D1-D12 (10-13): Rust code, not declarations, for vendor wire/adapt; generated traits + FlatBuffers for bridges and our infra; numbered immutable codec revisions with fixtures; no combined feed id; cadence in the kind id; formal NATS/PubSub sources; persister reads our live data. D13-D17: kind template, feed = template + subject values, source templates at config level, provider-descriptor format ids. Round 27b (10-13 evening, recorded 10-24): RON then SQLite + Avro change log with entity ids next to content ids and a local web editor (replaces D16 DSL and D18 macros); feed list as code in data-feed-list (7290 feeds, 1721 markets), feeds kept apart from kinds, supply rejected, kind resolution before market data resolution; Rust->TS FlatBuffers bridge for the VS Code fork. Rounds 28-34 (10-14): ingress, codecs, adapters, dispatch built then reverted (round 35); checkpoint committed on unpushed feed-catalog-v2 branches in data-feed-core and data-feed-definitions. D19: no coverage rule. D20: this iteration is OHLCV bars (bars-only is the agent's reading). 2026-10-24: decisions annotated with what replaced them, review findings and venue facts added, open questions collected, Appendix A holds the code sketches."
 related_sessions:
   - SESS-00Q639F
   - SESS-00PYCE2
   - SESS-00PXT2F
+  - SESS-00RBMHY
 agents:
   - claude-code:d32a6cdc-03e3-4c77-a3ff-e6f6b8ea89c6
   - claude-code:2e25d0d1-a48a-4ccc-8bd4-36673416f558
   - codex:01a134ec-77f7-79d2-b676-9bce6adfb5d7
+  - claude-code:f890d32c-47b2-45eb-8123-509056ff2783
+  - claude-code:a3645476-289f-4f21-9aaf-278ba8424a91
+  - claude-code:d40c39ec-871d-4fe8-bb0e-41f95704455a
+  - claude-code:a92bf607-c4ea-4232-ac9b-36fc21382b92
   - claude-code:0ffe82c9-8330-4693-8a2d-1c71f053dc9b
+  - claude-code:c1de5f63-34ab-4c4c-957a-d82475e989a7
 ---
 
 # SESS-00QGNFK: Catalog of canonical market data feeds: definitions, feed ids, codecs
@@ -497,6 +503,37 @@ dispatches by action; core digest feed IDs and demo concatenated kind/subject
 IDs are currently different schemes. No implementation or knowledge-base edits
 were made by this review.
 
+Main recommendation (Codex, not decided): add a subject-independent
+`FeedTemplate` to data-feed-core as the canonical declaration. Templates are
+authored as data in data-feed-definitions; a host compiler validates them with
+the core constructors, generates codec metadata and expands the supported
+subjects into one catalog archive. "I would start with RON authoring inputs"
+because market-info already works that way; Rust vs a text format is
+secondary to the intermediate model. Codex's own sub-agent disagreed and
+recommended Rust constructors first (the second opinion below takes that
+side). Later rounds went elsewhere: D18 (Rust macros), then round 27b
+(SQLite + Avro change log).
+
+Other points from the review:
+- Keep five identities apart: kind (provider + semantic product, no
+  instrument), feed (kind bound to one subject), definition revision,
+  representation/codec contract (framing, wire schema, encoding, semantic
+  binding), catalog release (the published snapshot, with its own format
+  version and digest).
+- Core's `MessageShapeId` already includes semantics and aggregation, so it
+  is not a pure wire layout hash; use it deliberately (relevant to rounds
+  21-22). The prototype's protobuf field numbers can change without changing
+  its shape or revision ids.
+- A physical view says which fields exist; a semantic view says what they
+  mean (units, event time, update behaviour). The binding between them stays
+  reviewed Rust.
+- Unknown contracts must fail at subscription setup, before any payload.
+- Open in the review, never answered by the user: unknown/control actions
+  and end-of-event flags, how the semantic binding is versioned, distinct
+  vendor products with equal semantics, where the binary reader sits, and
+  the trade vs book question below. Its coverage recommendation was rejected
+  by D19.
+
 ## Second-opinion review (Claude, second session)
 
 Claude joined this record as the second opinion and reviewed data-feed-core
@@ -518,6 +555,8 @@ Where it agrees with the third opinion:
   contracts satisfied by it, dispatched on the DBN action field.
 - Instances are expanded from a coverage declaration on the kind against a
   pinned market-info revision, not from every instrument in market-info.
+  (Rejected later by the user, D19; the feed list became a script, round
+  27b.)
 - First step: declare the MBP-1 kind with core types, instantiate for two real
   instruments, build the archive, keep the handrolled DBN reader.
 
@@ -554,10 +593,22 @@ Facts for the other agents, verified in code:
 - No feed info server runs; every service compiles the statics in. Config
   carries kind ids only in notify-gw, validated against the statics.
 
-Questions left for the user (also at the end of the notebook): trade record
-also emits a book update or stays exclusive; subject kind in the kind id;
-OHLCV as four kinds or one; who assigns the revision sequence; archive read
-directly by services, by the feed info server, or both.
+Questions left for the user (also at the end of the notebook), with what
+became of them:
+- Does a trade record also emit a book update, or stay exclusive? Never
+  answered. The reviewer leaned to "both" and warned it changes behaviour for
+  every consumer.
+- Subject kind in the kind id? Not decided (D13 lists the subject kind as
+  part of the kind template).
+- OHLCV as four kinds or one? Settled by the build: one kind per provider
+  and interval (round 27b).
+- Who assigns the revision sequence? Dropped in round 10.
+- Archive read directly by services, by the feed info server, or both? Not
+  answered; round 27b says a feed info server manages the feeds.
+
+Archive layout proposed by the review (not adopted): `data-feeds.rkyv` with a
+header, a `feed-kinds.csv` ledger the build diffs, and the pinned
+market-info revision.
 
 ## Round 12: wire changes and new wire messages (user question)
 
@@ -808,6 +859,12 @@ which source a message came from (except `send_time`, round 18). The host
 builds stateful adapters and passes them to the generated dispatcher; the
 contract table logic is shared with the market data server.
 
+User (round 20 message): "Even the subject id is the same, 'cause
+it's the same instrument id, only difference is the format we get the data
+as the input. Okay, this is perfect clarification." The answer was accepted
+as an explanation; the stateful adapter design itself was later built and
+reverted (rounds 31-35).
+
 ## Round 20: the user's summary, and sending a domain event (2026-10-13)
 
 User's summary (their words, condensed):
@@ -1035,6 +1092,8 @@ Agent answer (proposed):
 
 User: "Coverage -> no. That's not how it will be done." -> D19. Removed from
 the notebook. Open: where the list of feeds in the binary catalog comes from.
+(Answered in round 27b: a separate script reads market-info and writes the
+feed list.)
 
 ## Round 27: "format" or "schema"? (user question, 2026-10-13)
 
@@ -1054,6 +1113,256 @@ Agent view (not decided):
 - If chosen: rename the Databento descriptor field (`record_type`), and say
   "the schema includes the framing" once in the docs.
 
+## Round 27b: SQLite catalog, views vs events, the feed list (user, 2026-10-13, recorded late)
+
+A separate conversation on 2026-10-13, 15:46 to 17:47, between round 27 and
+round 28. It was added to this record later; the subsections follow its
+turns.
+
+### RON first; views vs events (15:46)
+
+User: "let's go step by step. I think a RON file is the way to go, and then
+we'll codegen rust, where the feed it will already be computed."
+- Events: keeps the current `MarketDataEventDefinition` ("kind that explains
+  the semantic meaning behind this event, cadence") and adds a "shape" that
+  points at the message's semantic view. "Shape declared once can be reused,
+  e.g. OHLCV can have the same shape, but a different bar unit (seconds,
+  minutes, hours, days), bar size (1, 5, 10, 15), bar alignment (UTC, trading
+  session, etc)." "Same for a book. A mpb can have 1 level or it can have 10
+  levels or 50."
+- Names: "some ron files will include the semantic views. Let's call them
+  'view'. then the other ron files will include the events, this is where
+  the semantic meaning kicks in." Then formats "with all the versioning
+  needed", then the feed kinds. All ids are computed from the files, and the
+  Rust traits, structs and ids are generated.
+- Where: a `v2` module in data-feed-core's `src` with all the new types,
+  replacing the old ones once approved ("I don't think data feed core is
+  used in many spots"); the generator in `data-feed-core/rust/crates/`; the
+  output in `data-feed-definitions/rust/crates/data-feed-definitions-v2`.
+- Scope: Databento OHLCV, units second/minute/hour/day, size 1, UTC
+  alignment (the user pasted Databento's OHLCV record table). "It's a
+  prototype, so it's a highly interactive process, we'll rework this and
+  shape it as we go."
+
+Done before the reversal below (never reported to the user): core `v2` types
+(ids, names, view, event, format, kind, catalog, traits), RON files for one
+view (`ohlcv_bar`), four events (`ohlcv_{1s,1m,1h,1d}_utc`), one format
+(`dbn_md_update.dbn_v3`) and four kinds (`databento.ohlcv_*`), and a first
+`data-feed-codegen` reading them. The user interrupted twice and asked "did
+you finish?".
+
+### SQLite + Avro instead of RON (16:11)
+
+User dropped RON and multiple files: "Let's store
+everything in sqlite and have a small tool that allows visualizing it and
+editing it. Then, you no longer need to rely on names. You can have an id for
+every entity and if I rename it, nothing happens. Reading and parsing sqlite
+is also super easy. If you need to store the structured data, use apache
+avro. Every change goes through the event log", like dev-env: "Every action
+is a structured event that is avro-encoded and stored in the database and
+then you have the derived views." The generator either scans the tables or
+replays the log. Two follow-ups while the agent worked: "Yeah, you can go
+full custom AST there if you need. I just need a simple visualization layer."
+and a pointer to another event log of theirs as a second example.
+
+User answers to the agent's questions:
+- Ids: stable entity id plus computed content id (the agent's recommended
+  option). The entity id is assigned at creation and is what entries use to
+  refer to each other, so a rename changes nothing; the content id
+  (`fview_`, `fevent_`, `ffmt_`, `fkind_`, D17) stays the wire id and catches
+  duplicates. Editing a kind's events gives it a new content id.
+- Tool: a local web page served by a Rust binary (recommended option), not a
+  panel in the dev-env app, not a terminal UI.
+- Committing the binary SQLite file to git: "Decide later".
+- Dependencies: "nah, bump num-bigint, i think it's fine" (`apache-avro` 0.22
+  needs num-bigint 0.4.8); then "Bump uuid everywhere" (`=1.23.1` to
+  `=1.23.3` in 11 manifests).
+
+Done (2026-10-13, uncommitted at the time):
+- Core `v2`: every entry has an entity id (`view_…`, `event_…`, `format_…`,
+  `kind_…`) and a content id; every edit is a `CatalogChange`, and the
+  catalog is the changes applied in order.
+- Crate `data-feed-catalog-store` (data-feed-core): one SQLite file with an
+  append-only, hash-chained `change` table holding Avro payloads,
+  `change_schema`, `catalog_info`, and projection tables (`view`,
+  `view_field`, `event`, `format`, `kind`, `kind_event`, `kind_format`)
+  rewritten in the same transaction. An append is refused unless the whole
+  catalog still checks out. Tests: round trip of every change kind, renames
+  keep content ids, deletes refused while referenced, tampering breaks the
+  chain. Avro sum types are stored as a tag plus one optional field per
+  variant, because `apache-avro`'s union form for enums with data does not
+  read back.
+- Crate `data-feed-catalog-editor` (data-feed-core, built by a background
+  agent): `just editor <catalog>` serves a page on 127.0.0.1:7878 listing
+  views, events, formats, kinds and the log; every save becomes changes in
+  the log. If one save produces several changes and a later one is refused,
+  the earlier ones stay in the log.
+- The generator reads the catalog file; a seed program wrote the OHLCV
+  catalog (10 changes) to `data-feed-definitions/catalog.sqlite`.
+- RON gone: the `definitions/` directory and the RON loader deleted.
+- Outside the new crates: num-bigint `=0.4.8` in dsl-next-nodes, the uuid
+  bump, `serde_json =1.0.151` from crates.io in the store crate (the vendored
+  1.0.149 is too old for `apache-avro`).
+
+### Ids in the generated Rust; subscribing to 1m bars (16:35)
+
+User: "can we now generate the rust types based on those? Can we also
+generate the rust structs with the definitions where all the ids are
+computed? How would I specify that I want to subscribe to a data feed with
+OHLCV 1m bars?"
+
+Done: per view a trait plus a static entry listing its fields; per event,
+format and kind a marker type and a static entry with every id filled in
+(the event entry holds its definition, e.g. `Bar(Ohlcv(Minute, 1, Utc))`,
+`EventDriven`, and points at the view entry); handler traits per event
+(`handle_ohlcv_1m_utc<V: OhlcvBar>`) and per kind (union of its events);
+`CATALOG` looks up kinds and events by id and finds the kinds carrying an
+event. A test in the generated crate asks "who sends 1m OHLCV bars".
+
+Agent proposal (not decided): subscribing is said in three places. Code: the
+handler is written against the event, so any kind carrying `ohlcv_1m_utc`
+can feed it. Config: kind + subject, e.g. `kind: fkind_c535…` and
+`subject: { instrument: inst_… }`; the program refuses a kind whose events
+it cannot handle. Transport: the program never picks the format; it
+subscribes to `feeds.{fkind}.{fsubj}.*` and the format in the NATS subject
+picks the codec. Missing for that: subject values and their ids, a
+`FeedRef`, the format dispatch.
+
+Open, not answered by the user: should configs name feeds by content id (the
+agent's suggestion, so a rename cannot break a config) or by name?
+
+### The list of feeds (16:56 and 17:12)
+
+User: building a strategy, "I want to know what kind of events are
+available." CME data comes from Databento (1s, 1m, 1h, 1d); Hyperliquid's
+candle snapshot gives "1m" to "1M" with UTC alignment. "The client needs to
+know beforehand which bar sizes, units and alignment for which instruments
+have feeds. Ideally, we ship a different SQLite file, where we have all the
+feeds for all the market info we have."
+
+Agent proposal (rejected in part): two files, the edited `catalog.sqlite`
+and a built, shipped `feeds.sqlite`; Hyperliquid as a venue provider with
+its own `hyperliquid.candle_json` format and one kind per interval, sharing
+the 1m/1h/1d events with Databento; a new catalog entry, a "supply" (kinds,
+markets as a market-info query, live/historical regime, time window),
+expanded against market-info into `feeds.sqlite`; one handler per view that
+receives the event's entry, instead of one handler per event (18 OHLCV
+handler traits otherwise).
+
+User answers, which also close round 26's open question (where the list of
+feeds comes from):
+- "I thought we have a different script that goes and queries the market
+  info (from rkyv) and based on certain logic it generates a massive list of
+  feeds and stores them in the database. I don't think the feed definition
+  must know how the actual feeds are going to be created. I imagine we have
+  some kind of 'feed info server' that will manage that."
+- "the feeds should live separately from feed kinds. Feed kinds are
+  templates, feeds are actual values."
+- Only market-info subjects are prepopulated: "we don't have to populate the
+  database for every feed, since it's a combinatoric explosion. I think we
+  only need to prepopulate the database for the mkt info, because we're
+  actively looking for what is available."
+- "The historical vs live vs time range is not a feed concern. It's someone
+  elses job to figure that out".
+- "I like the file, but don't integrate the 'supply' thing in there. I think
+  it must be a script or a piece of logic somewhere, not a declarative
+  information."
+- "There should be 2 components working: feed kind resolution and then the
+  market data resolution for that feed kind. It's possible that the feed
+  kind is valid, but we haven't downloaded the data yet".
+- Hyperliquid's 3d, 1w, 1M: "let's skip. Hyperliquid here is just an example
+  to figure out the boundaries" (the agent had asked what anchors a 3d or 1w
+  grid).
+- Shared events: "Event is the same unless there is a semantic diff. I guess
+  for now let's assume it's the same. Maybe the fact of how they send the
+  data matters and we'll adjust in the future".
+- Client: "it's not a browser, we use vscode fork. So, ideally, this is where
+  we need to generate the typescript interfaces and the encoders/decoders
+  between the rust core and typescript".
+
+Done (2026-10-13, uncommitted at the time):
+- Catalog reseeded (30 changes): 1 view, 12 events, 2 formats, 15 kinds.
+  Databento 1s/1m/1h/1d; Hyperliquid 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 8h,
+  12h, 1d with provider `FeedProvider::Venue(Hyperliquid)` and format
+  `hyperliquid.candle_json`; Databento and Hyperliquid share `ohlcv_1m_utc`,
+  `ohlcv_1h_utc`, `ohlcv_1d_utc`. Databento's kind ids did not change. The
+  old file could not be read after the stored provider record changed, so it
+  was reseeded instead of migrated: entity ids are new, content ids are not.
+- Core `v2`: `FeedSubject::Instrument(id)` with an `fsubj_` id;
+  `Feed { kind, subject }` with no id of its own; `FeedKindEntry::feed`
+  refuses a subject of the wrong kind.
+- Crate `data-feed-list` (data-feed-definitions): the selection is code in
+  `selection.rs`: CME, CBOT, NYMEX and COMEX futures get every Databento
+  kind, Hyperliquid perps every Hyperliquid kind, everything else nothing;
+  the match covers every venue and instrument type, so a new venue does not
+  compile until someone decides. `just feed-list <market-info.rkyv>` writes
+  `feeds.sqlite` (1.6 MB): feeds, kinds, events with bar unit, size and
+  alignment as columns, and the inputs (market-info revision included);
+  nothing about live, historical or downloaded data. On the real archive:
+  7290 feeds from 1721 markets (1179 CME Group futures x 4 + 234
+  Hyperliquid perps x 11).
+- Feed kind resolution is the reader `FeedList`: `resolve(instrument,
+  event)` and `bar_series(instrument)` (4 series for an ES future, 11 for a
+  Hyperliquid perp, none for a Hyperliquid spot market). Market data
+  resolution is left for its own component.
+
+Open, not answered by the user: one handler per view (receiving the event
+entry) or one per event, as generated today.
+
+### TypeScript for the VS Code fork (17:30)
+
+Agent questions: Price/Qty on the wire (exact `rust_decimal` or a string),
+`flatc` or our own generator for FlatBuffers code, which Node the fork runs
+(`node:sqlite` needs 22.5+). User: "I would think that all the domain types
+we have in rust would be the same for typescript"; "use mise I think I have
+mise.toml in the root of the workpace. You can add one more to the dir where
+you plan on using the flatc"; "let's not modify the electron app for now,
+create some usage example."
+
+Done (2026-10-13, uncommitted at the time):
+- One `data-feed-codegen` run writes Rust, the FlatBuffers schema and
+  TypeScript. `feed_message.fbs`: every message is a `FeedMessage` with kind
+  id, subject id, event id and the view in a union. Price and Qty travel as
+  `rust_decimal`'s 16 bytes (four 32-bit words: flags, lo, mid, hi), exact
+  with scale, the layout numerics already uses for rkyv.
+- `flatc` 25.12.19 (already pinned in the workspace root) through a new
+  `data-feed-core/mise.toml`; the generator runs it and its check mode
+  compares `flatc`'s output too.
+- Rust: `encode_ohlcv_bar(feed, event, &impl OhlcvBar)` and
+  `read_feed_message(bytes)` returning an `OhlcvBarReader` that implements
+  `OhlcvBar`; a property test round-trips 256 random bars, decimal scales
+  included.
+- TS package `@structure/data-feed-definitions-v2`: handwritten `domain.ts`
+  with the same domain types as Rust (`InstrumentId`, `NanoTimestamp` as
+  branded bigints, `Price`, `Qty` as branded ts-core `Decimal`s); generated
+  catalog constants with every id, one interface per view, and
+  `readFeedMessage(bytes)` returning a ts-core `Result`; `FeedList` in
+  `feed_list.ts` reads `feeds.sqlite` through `node:sqlite`.
+- `just ohlcv-example` (data-feed-definitions): Rust writes three bars, a
+  standalone TS example reads them, lists the catalog and resolves feeds
+  (run on Node 24). The Electron app is untouched.
+- Compromises the agent listed: the example runs through `tsx`; npm
+  `flatbuffers` 25.9.23 against `flatc` 25.12.19; no FlatBuffers verifier in
+  TS, so `readFeedMessage` checks required fields itself; `strict: false`
+  with `strictNullChecks` because ts-core does not compile under `strict`;
+  `domain.ts` and `entry.ts` are hand-kept mirrors of the Rust types.
+
+This state was committed on 2026-10-14, one commit each on branch
+`feed-catalog-v2` of data-feed-core and data-feed-definitions (round 35); it
+is the checkpoint round 35 returned to.
+
+### What this replaces
+
+- D18 ("Rust with macros for now; the DSL later") is replaced: first by RON
+  files (15:46), then the same hour by the SQLite catalog with an Avro change
+  log. The RON authoring proposals in this record (agent proposal 1, the
+  third opinion's "start with RON authoring inputs") are rejected with it,
+  as is one file per definition.
+- D16's DSL is replaced by the SQLite catalog; the generator writes Rust and
+  TS from it (Python not yet).
+- Round 26's open question is answered: the feed list is built by code from
+  market-info, kept apart from the kinds.
+
 ## Round 28: ingress scaffold for bars (user, 2026-10-14)
 
 User asked how format, codec and adapter link to the v2 definitions, starting
@@ -1061,9 +1370,18 @@ with a working scaffold of `data-feed-definitions-v2/examples/consume_bars.rs`:
 ingress threads reading bars straight from the venues, publishing
 `IngressMsg::Feed(FeedMsg { stream_id, payload })` to a bounded channel, and
 the component's `on_feed_msg` doing `dbg!(msg)`. No mapping to our instrument
-ids yet.
+ids yet. "It's a prototype, so it's a highly interactive process, we'll
+rework this and shape it as we go."
 
-Done (2026-10-14, uncommitted):
+Venue facts the user gave for the mapping to our instrument ids:
+- Hyperliquid: "the market info already tells you the market_idx", fetch the
+  "universe" if some info is missing. Candle requests are
+  `{"coin", "interval", "startTime", "endTime"}`; HIP-3 coins take the dex
+  name as a prefix, e.g. `"xyz:XYZ100"`.
+- Databento: replay the security definitions from the start of the week to
+  get the instrument mapping (as the databento-mkt-data service does).
+
+Done (2026-10-14, reverted in round 35):
 - Databento thread: one live session (`GLBX.MDP3`, ohlcv-1m by raw symbol
   ESZ6 + CLX6, DBN v3 with ts_out, 10 min intraday replay so bars show up at
   once). Routes by Databento instrument id -> `StreamID` from the session's
@@ -1153,7 +1471,8 @@ Agent proposal (not decided):
 - Open: whether "market status" meant the definitions (id mapping) or the
   status records (phases and halts); handler context (which kind/format a
   bar came from); keeping the 10 min bar replay next to the definitions
-  replay; dbn 0.68 vs 0.70.
+  replay; dbn 0.68 vs 0.70. None of these were answered before the revert
+  (round 35); what "market status" means is still open for the next attempt.
 
 ## Round 30: type-specific codecs, who owns the lookup tables (user, 2026-10-14)
 
@@ -1337,6 +1656,11 @@ Done (2026-10-14, uncommitted):
   chose.
 - Verified live: 9 replayed bars per instrument held then released after the
   definitions, live bars after, HYPE 3m candle delivered; no rejections.
+- The agent listed the 4096 bound (drop oldest) and the 11 interval slots
+  as choices for the user; they were never decided. This round proposed a
+  native kind per Databento schema and a separate translator (round 32) but
+  built one `databento.live` kind carrying our instrument ids, resolved
+  inside the route. All of it was reverted in round 35.
 
 ## Round 35: back to the kinds and definitions (user, 2026-10-14)
 
@@ -1345,7 +1669,8 @@ the kinds, the types of every domain view and event, the Rust and TypeScript
 generators and the generator of all supported feeds; revert the consumer,
 codec and adapter work.
 
-Done (2026-10-14, uncommitted): everything from rounds 28-34 reverted.
+Done (2026-10-14): everything from rounds 28-34 reverted. The checkpoint is
+what round 27b built.
 - Removed: core v2 `consume.rs` and `stream.rs`, `deliver.rs`, the crates
   `data-feed-codec-databento` and `data-feed-codec-hyperliquid`, the
   adapter traits and `Deliver` impls in the generator, the
@@ -1358,9 +1683,34 @@ Done (2026-10-14, uncommitted): everything from rounds 28-34 reverted.
 - `consume_bars.rs` is back to the user's 182-line scaffold (does not
   compile, as at round 28); the v2 crate's dev-dependencies are back to
   proptest only.
-- Removed code kept at `/tmp/revert-qgnfk/removed`, full pre-revert copy at
-  `/tmp/revert-qgnfk/before-revert.tgz`.
+- The removed code was kept only in a temporary local copy, which no longer
+  exists. The `bars-e2e-reading-guide` notebook (written at the user's
+  request during rounds 29-34, together with a DBN session order listing
+  and a `consume_bars` run log) is the only remaining description of it;
+  it describes the removed code, not the checkpoint.
 - Rounds 28-34 above stay as the record of what was tried.
+
+Then the user asked: "create branches, stage it, commit it, create the
+dev-env notebook explaining the new idea e2e". Done (2026-10-14):
+- Branch `feed-catalog-v2` in data-feed-core, one commit "Feed catalog v2:
+  views, events, formats and feed kinds" (core `v2` module, the
+  `data-feed-catalog-store`, `data-feed-catalog-editor` and
+  `data-feed-codegen` crates).
+- Branch `feed-catalog-v2` in data-feed-definitions, one commit "Feed catalog
+  v2: the catalog file, its generated crate and package, the feed list"
+  (`catalog.sqlite`, `data-feed-definitions-v2` Rust crate and TS package,
+  `data-feed-list`, `just feed-list` and `just ohlcv-example`).
+- Both branches rebased on main on 2026-10-15; neither is pushed (state on
+  2026-10-24).
+- data-feed-core has to be merged first: `data-feed-definitions-v2` and
+  `data-feed-list` depend on data-feed-core `main` by git, so they only build
+  against the branch through a local cargo patch.
+- `consume_bars.rs` (the user's scaffold in `data-feed-definitions-v2/examples`)
+  is not committed and does not compile. Agent asked whether to delete it or
+  keep it as the starting point; not answered.
+- Notebook `feed-catalog-v2-e2e` written: walks the catalog, the generated
+  code, the feed list (`feeds.sqlite`, 7290 feeds for 1721 markets) and the
+  TS example end to end. Round 36 extends it.
 
 ## Round 36: the problem and this iteration's scope (user, 2026-10-14)
 
@@ -1385,6 +1735,12 @@ Done: notebook gains "The problem" and "This iteration" sections; the old
   language for every wire format, and a declarative mapping language with
   closed conversions (cannot express cases like JSON u64 as number or
   string).
+  Notes: the user's words were "use our own 'engine' as the entrypoint of
+  every program"; "for decoding only, not the main loop" is the agent's
+  narrowing (round 4), not confirmed. "A reference to a Rust codec +
+  adapter" was replaced in round 25 by a link through trait impls (format id
+  from the descriptor, no URIs). Open, asked three times and never answered:
+  does the engine run inside each program, as a normalizer service, or both?
 
 - D2 (2026-10-13): In Rust, domain events are traits (views) over the
   incoming message; Rust consumers read the wire message through them, no
@@ -1396,11 +1752,19 @@ Done: notebook gains "The problem" and "This iteration" sections; the old
   into it, and TS/Python readers that return the handwritten domain types;
   the bridge costs one encode per event (batched). The same `.fbs` could be
   the normalized representation a normalizer service publishes.
+  Built (round 27b): the generator writes one `.fbs` (`FeedMessage`: kind,
+  subject and event ids plus the view in a union), a Rust encoder taking any
+  `impl` of the view, a Rust reader implementing the view trait, and TS
+  interfaces and readers; code via `flatc` pinned with mise. Price and Qty
+  cross as `rust_decimal`'s 16 bytes. TS domain types are the same as
+  Rust's. Python not done.
 - D3 (2026-10-13): Codec revisions are explicit, immutable once released,
   and each keeps its golden fixtures (raw bytes -> expected domain events)
-  forever. Whether a revision is a number or a git commit is still open.
+  forever ("for sure"). Number vs git commit: settled by D10 (numbers).
 - D4 (2026-10-13): A generated dispatch table maps (revision, encoding) to a
-  decoder.
+  decoder. Superseded in round 20 (proposed, not confirmed): dispatch is
+  keyed by (kind, format). Dispatch was then implemented in rounds 31-34 and
+  reverted in round 35; open again.
 - D5 (2026-10-13): Our own semantic events sent inside our infrastructure use
   the same FlatBuffers encoding as the language bridge.
 - `DataFeedRef` is no longer a good abstraction and the data feed definition
@@ -1414,13 +1778,18 @@ Done: notebook gains "The problem" and "This iteration" sections; the old
 - D8 (2026-10-13): Sources on transports with a formal structure need no
   table: NATS subjects follow a fixed structure, Pub/Sub messages carry fixed
   attributes. Files are listed in a separate table whose rows point at the
-  feed and the format.
+  feed and the format. The user's words were softer ("Ideally, most of it is
+  all formalized"). Who declares a source (the writing service or infra)
+  was asked in round 15 and is still open.
 - D9 (2026-10-13): The persister reads our live data (the market data
   server's NATS output), not a second Databento connection.
 - D10 (2026-10-13): Codec revisions are numbers ("numbers, I think"); the git
   commit is provenance only.
 - D11 (2026-10-13): The trait for each domain event type is generated from its
   declaration (the domain value types it returns stay handwritten).
+  Refined (round 27b): the trait is generated per view (a shared shape such
+  as `OhlcvBar`); each event (meaning + cadence + view) gets a marker type and
+  a handler trait over its view.
 - D12 (2026-10-13): A program declares the formats it knows how to handle;
   data in any other format is refused. "Fine for now."
 - D13 (2026-10-13, user summary): A feed kind is a template describing the
@@ -1432,9 +1801,16 @@ Done: notebook gains "The problem" and "This iteration" sections; the old
   (`FeedNatsSource { kind, subject, format }`, `DatabentoFileSource { dataset,
   schema, instrument_id, time_range }`) filled at config level; they are
   orthogonal to feed definitions. Historical timelines are for later.
+  The user's NATS subject shape was
+  `feeds.kind.{feed_kind_id}.sub.{subject_id}.fmt.{format}`; the shorter
+  `feeds.{fkind}.{fsubj}.{ffmt}` used elsewhere in this record is the
+  agent's, never reconciled.
 - D16 (2026-10-13, user summary): Feed definitions are declared in a DSL that
   generates Rust, TypeScript and Python records, giving programmatic access to
-  kind ids.
+  kind ids. Replaced (round 27b): the definitions (views, events, formats,
+  kinds) live in one SQLite catalog file; a generator reads it and writes
+  Rust and TypeScript (Python later) with every id precomputed. The
+  generated records part stands.
 - D17 (2026-10-13): Format ids are computed with a `SemanticHash` trait from
   typed, provider-specific descriptors built on the provider's own versioning
   (DBN version, CME SBE schema id + version, Google's schema version) plus
@@ -1444,11 +1820,30 @@ Done: notebook gains "The problem" and "This iteration" sections; the old
   revision for silent vendor breaks, runtime marker checks.
 - D18 (2026-10-13): Feed definitions are written in Rust with macros for now;
   the DSL (D16) comes later.
+  Replaced the same day (round 27b): the catalog is one SQLite file. Every
+  change is an Avro-encoded event in an append-only, hash-chained log;
+  projection tables are derived from it; a small local web page edits it.
+  Every entity has a stable entity id ("if I rename it, nothing happens")
+  next to its computed content id (D17). Rejected: Rust macros as the
+  source, RON files, one file per definition. Committing the file to git:
+  decide later.
 - D19 (2026-10-13): No coverage rule on the kind. "That's not how it will be
   done." Rejected: a rule on the kind expanded against market-info by the
   catalog build.
-- D20 (2026-10-14): This iteration solves only part of `problem.md`, for OHLCV
-  bars only. Worked on: "what" (catalog of views, events, formats, kinds with
+  What replaces it (round 27b): the list of feeds is built by code (a script
+  now, a feed info server later) that reads market-info and writes a
+  separate `feeds.sqlite`; only market-info subjects are prepopulated. "Feed
+  kinds are templates, feeds are actual values." Rejected: a declarative
+  "supply" entry in the catalog. Live, historical and time range are not a
+  feed concern: feed kind resolution comes first, market data resolution is
+  a separate component.
+- D20 (2026-10-14): This iteration solves only part of `problem.md`. The
+  user's words: "It's fine to only solve a part of it right now because
+  there are too many unknowns." The rest of this entry is the agent's reading
+  of the checkpoint, not confirmed by the user: "OHLCV bars only" because only
+  bar views and events exist; "dynamism: nothing yet" and "the Rust -> TS
+  crossing counts as partial platform/core progress" were flagged by the
+  agent as its own reading. Worked on: "what" (catalog of views, events, formats, kinds with
   content ids), "where" as one lookup (feed list of every kind x instrument,
   `resolve`; empty = unsupported), views as generated Rust traits + TS
   readers, events (unit, size, alignment, cadence, handler traits), one-way
@@ -1456,3 +1851,373 @@ Done: notebook gains "The problem" and "This iteration" sections; the old
   where to read a feed (sources, D15), live vs downloaded, validation rules,
   Python, non-bar data, two-way client/server protocol, run-time
   registration (dynamism), codecs/adapters/dispatch (rounds 28-34).
+
+## Open questions (collected 2026-10-24)
+
+Asked during this record and never answered by the user, with the place
+they come from:
+- Does the engine run inside each program, as a normalizer service, or both?
+  (D1, rounds 3-4)
+- Who declares a source: the service that writes it, or infra? (D8, round 15)
+- NATS subject shape: the user's
+  `feeds.kind.{feed_kind_id}.sub.{subject_id}.fmt.{format}` vs the agent's
+  `feeds.{fkind}.{fsubj}.{ffmt}`. (D15)
+- Does an MBP-1 trade record also emit a book update, or stay exclusive?
+  How are unknown/control actions and end-of-event flags handled? (reviews)
+- Is the subject kind part of the kind id? (second opinion, D13)
+- Who reads the catalog and the feed list: services directly, the feed info
+  server, or both? (reviews, round 27b)
+- How is the semantic binding (wire record -> domain event) versioned?
+  (third opinion)
+- Do configs name feeds by content id or by name? (round 27b)
+- One handler per view (receiving the event entry) or one per event, as
+  generated today? (round 27b)
+- Is `catalog.sqlite` kept in git? "Decide later" (round 27b); it is
+  committed on the `feed-catalog-v2` branch.
+- "format" or "schema" as the name? (round 27)
+- What "market status" meant, and which kind and format a handler is told a
+  message came from. (round 29)
+- Keep `consume_bars.rs` as the starting point, or delete it? (round 35)
+- The two lines of D20 the agent flagged as its own reading (dynamism
+  "nothing yet", the Rust -> TS crossing as partial platform/core progress).
+
+## Appendix A: code sketches from the conversation
+
+The rounds above describe these sketches in prose. They are copied here as the
+user last saw them. None of them is code that exists in a repository.
+
+### A.1: `feed_dispatch!`, the list of feeds a program accepts (round 16)
+
+Each program lists the (kind, format) pairs it handles, with the codec and
+adapter revision for each; a macro would generate the struct holding codec
+state and adapters, a `consume(feed_ref, bytes, handler)` that matches
+statically, and one error enum (D12). This is the round 20 version: round 16
+keyed the list by format alone, and round 20 changed the key to (kind,
+format). Status: sketch, never implemented. Rounds 29-34 tried a handwritten
+route per stream instead, round 35 reverted that, and D20 leaves dispatch for
+later.
+
+```rust
+feed_dispatch! {
+    pub struct StrategyFeeds;
+
+    // kind               format                       => codec revision,         adapter revision
+    databento::Mbp1,      databento::EnvelopeDbn3      => databento::Envelope2,   databento::Mbp1Envelope1,
+    databento::Mbp1,      databento::FileHistDbn3      => databento::File1,       databento::Mbp1File1,
+    databento::Status,    databento::EnvelopeDbn3      => databento::Envelope2,   databento::StatusEnvelope1,
+    stxr::Bars1m,         stxr::Bars1mFlatBuffers      => generated,              generated,
+}
+```
+
+### A.2: source templates and sending a domain event (round 20)
+
+The source templates come from the user's summary (D15): one struct per
+transport, filled in from config. The publish snippet answers "how do I send
+the domain event somewhere?": the producer calls the encoder generated for
+its kind, and the host builds the NATS source and publishes. Status: sketch.
+Sources were left for later by D20, and the generated encoder was never
+written in this form.
+
+```rust
+struct FeedNatsSource {
+    kind: FeedKindId,
+    subject: FeedSubjectId,
+    format: FeedFormatId,
+}
+
+impl FeedNatsSource {
+    fn to_subject(&self) -> String {
+        format!("feeds.kind.{}.sub.{}.fmt.{}", self.kind, self.subject, self.format)
+    }
+}
+
+struct DatabentoFileSource {
+    dataset: Dataset,
+    schema: Schema,
+    instrument_id: InstrumentId,
+    time_range: TimeRange,
+}
+```
+
+```rust
+let bytes = bars_1m::flatbuffers::encode_ohlcv_bar(&mut builder, orderand, &bar);
+let source = FeedNatsSource {
+    kind: bars_1m::KIND_ID,
+    subject: bar.instrument_id().subject_id(),
+    format: bars_1m::flatbuffers::FORMAT_ID,
+};
+nats.publish(source.to_subject(), bytes);
+```
+
+### A.3: format descriptors per provider and `SemanticHash` (round 23)
+
+A format id is the hash of a typed descriptor built on the provider's own
+versioning plus anything else that changes the bytes; the label in the
+source maps to a descriptor and is never the id. Status: accepted as D17.
+The round 27b catalog keeps a descriptor per format and derives its `ffmt_`
+id from it.
+
+| Provider family | Descriptor | Example |
+| --- | --- | --- |
+| Databento | DBN version, schema, framing (live session, or zstd file with or without `ts_out`) | DBN v3, mbp-1, zstd file without `ts_out` |
+| CME MDP 3.0 | SBE schema id and version, packet framing | schema 1, version 13 (`templates_v13.xml`; its 32 templates are messages inside it) |
+| Google Cloud Monitoring | notification schema version | 1.2 |
+| Our envelope | envelope version, plus the descriptor of what it wraps | `DbnMdUpdate` v1 wrapping DBN v3 mbp-1 |
+| Our kinds | kind id, encoding, compatibility line | `stxr.bars_1m`, FlatBuffers, line 1 |
+
+```mermaid
+flowchart LR
+    L["Label in the source<br/>databento.envelope.dbn3"] --> DS["Descriptor<br/>StxrEnvelope v1 wrapping Databento DBN v3 mbp-1"]
+    DS -->|"SemanticHash"| ID["Format id<br/>ffmt_…"]
+    ID --> LED["Ledger<br/>build refuses an id change"]
+    ID --> GEN["Generated records<br/>Rust, TypeScript, Python"]
+```
+
+### A.4: the DSL for `type`, `enum`, `event`, `format` and `kind` (round 24)
+
+Four declaration kinds in `.feeds` files, with syntax borrowed from the
+market-info protocol DSL. Status: sketch, never implemented. Round 25 moved
+cadence from the kind to each event entry, D19 rejected `coverage`, and D18
+put the DSL off in favour of Rust macros (A.5).
+
+```
+/// A market-info instrument. 0 is never valid.
+type InstrumentId = u64 { range: 1.. }
+type NanoTimestamp = u64
+/// `decimal` is the built-in wire form of rust_decimal (numerics::Price and Qty wrap it).
+type Price = decimal
+type Qty = decimal { range: 0.. }
+
+/// Wire values are explicit; 0 means "not set".
+enum TradeSide: u8 { Buy = 1, Sell = 2 }
+```
+
+```
+/// One print on the tape.
+event Trade {
+    instrument_id: InstrumentId = 1,
+    event_time: NanoTimestamp = 2,
+    observe_time: NanoTimestamp = 3,
+    send_time: NanoTimestamp = 4,
+    price: Price = 5,
+    quantity: Qty = 6,
+    side: optional TradeSide = 7,
+    liquidity_role: LiquidityRole = 8,
+    trade_id: optional TradeId = 9 since 2,
+}
+```
+
+```
+format databento.live.dbn3.mbp1 = Databento {
+    dbn: 3, schema: mbp-1, framing: LiveSession { ts_out: true },
+}
+format databento.envelope.dbn3.mbp1 = StxrEnvelope {
+    envelope: DbnMdUpdate { version: 1 },
+    inner: Databento { dbn: 3, schema: mbp-1, framing: Record { ts_out: true } },
+}
+format databento.file.hist.dbn3.mbp1 = Databento {
+    dbn: 3, schema: mbp-1, framing: ZstdFile { ts_out: false },
+}
+format gcp.monitoring.incident.v1_2 = GcpMonitoringNotification { schema_version: "1.2" }
+```
+
+```
+/// Top of book and trades from Databento, one feed per instrument.
+kind databento.mbp1 {
+    provider: Vendor(Databento),
+    subject: Instrument,
+    cadence: EventDriven,
+    orderand: u32,                 /// DBN `sequence`
+    events: [Mbp1BookUpdate, Trade],
+
+    formats {
+        databento.live.dbn3.mbp1      => rust "databento-feed-codecs"::live,
+        databento.envelope.dbn3.mbp1  => rust "databento-feed-codecs"::envelope,
+        databento.file.hist.dbn3.mbp1 => rust "databento-feed-codecs"::file,
+    }
+
+    coverage: markets(venue in [cme, cbot, nymex, comex], type = future),
+}
+
+/// One minute bars we compute from trades.
+kind stxr.bars_1m {
+    provider: Internal(Stxr),
+    subject: Instrument,
+    cadence: FixedInterval(1m),
+    orderand: u64,
+    events: [OhlcvBar],
+    formats { generated FlatBuffers }
+    coverage: markets(venue in [cme, cbot, nymex, comex], type = future),
+}
+```
+
+### A.5: the `event!`, `feed_format!` and `feed_kind!` macros (round 25)
+
+This is the Rust version of A.4 (D18). The handwritten value types get a
+derive for their wire form, the macros emit plain `const` ids, and each kind
+gets a generated handler trait with one method per event. Status: sketch;
+the macros were never written. Round 27b replaced the macro catalog with a
+SQLite catalog file with an Avro change log, plus a generator for the
+Rust crate and the TypeScript package; that generator does emit handler
+traits per event and per kind.
+
+```rust
+#[derive(FeedValue)]
+#[feed_value(u64, range = 1..)]
+pub struct InstrumentId(u64);
+
+#[derive(FeedValue)]
+#[feed_value(u8, wire = { Buy = 1, Sell = 2 })]
+pub enum TradeSide { Buy, Sell }
+```
+
+```rust
+event! {
+    /// One print on the tape.
+    pub Trade {
+        instrument_id: InstrumentId = 1,
+        event_time: NanoTimestamp = 2,
+        observe_time: NanoTimestamp = 3,
+        send_time: NanoTimestamp = 4,
+        price: Price = 5,
+        quantity: Qty = 6,
+        /// None when the provider could not tell the aggressor.
+        side: Option<TradeSide> = 7,
+        liquidity_role: LiquidityRole = 8,
+        #[since(2)]
+        trade_id: Option<TradeId> = 9,
+    }
+}
+```
+
+```rust
+feed_format! {
+    pub DATABENTO_LIVE_DBN3_MBP1 = Databento {
+        dbn: 3,
+        schema: Mbp1,
+        framing: LiveSession { ts_out: true },
+    }
+}
+
+feed_format! {
+    pub DATABENTO_ENVELOPE_DBN3_MBP1 = StxrEnvelope {
+        envelope: DbnMdUpdate { version: 1 },
+        inner: Databento { dbn: 3, schema: Mbp1, framing: Record { ts_out: true } },
+    }
+}
+
+feed_format! {
+    pub DATABENTO_FILE_HIST_DBN3_MBP1 = Databento {
+        dbn: 3,
+        schema: Mbp1,
+        framing: ZstdFile { ts_out: false },
+    }
+}
+```
+
+```rust
+feed_kind! {
+    /// Top of book and trades from Databento, one feed per instrument.
+    pub DatabentoMbp1 {
+        provider: Vendor(Databento),
+        subject: Instrument,
+        /// DBN `sequence`.
+        orderand: DatabentoSequence,
+        events: {
+            Mbp1BookUpdate: EventDriven,
+            Trade: EventDriven,
+        },
+        formats: [
+            DATABENTO_LIVE_DBN3_MBP1,
+            DATABENTO_ENVELOPE_DBN3_MBP1,
+            DATABENTO_FILE_LIVE_DBN3_MBP1,
+            DATABENTO_FILE_HIST_DBN3_MBP1,
+        ],
+    }
+}
+```
+
+The handler trait the kind would emit:
+
+```rust
+pub trait DatabentoMbp1Handler: FeedHandler {
+    fn on_mbp1_book_update<C: FeedMessageContext, M: Mbp1BookUpdate + HasFeedOrderand<Orderand = DatabentoSequence>>(
+        &mut self,
+        context: &C,
+        msg: &M,
+    ) -> Result<(), Self::Error>;
+
+    fn on_trade<C: FeedMessageContext, M: Trade + HasFeedOrderand<Orderand = DatabentoSequence>>(
+        &mut self,
+        context: &C,
+        msg: &M,
+    ) -> Result<(), Self::Error>;
+}
+```
+
+A kind we provide ourselves, the producer side of A.2:
+
+```rust
+feed_kind! {
+    /// One minute bars we compute from trades.
+    pub StxrBars1m {
+        provider: Internal(Stxr),
+        subject: Instrument,
+        orderand: u64,
+        events: {
+            OhlcvBar: FixedInterval(1m),
+        },
+        formats: [generated FlatBuffers],
+    }
+}
+```
+
+### A.6: codecs and adapters linked by trait impls (round 25)
+
+The definitions name no code. A codec crate implements `Codec` for a format
+and an adapter implements `Adapter` for a (kind, format), so the compiler
+checks the link and no URI is needed. Status: sketch. Rounds 29-31 tried
+other traits (`Adapt<W>`, generated `Deliver` impls), and round 35 reverted
+all codec and adapter code.
+
+```rust
+// databento-feed-codecs, src/envelope/rev2.rs
+pub struct EnvelopeCodec2;
+
+impl Codec for EnvelopeCodec2 {
+    const FORMAT: FeedFormatId = DATABENTO_ENVELOPE_DBN3_MBP1.id();
+    const REVISION: u32 = 2;
+    type Message<'a> = DbnRecord<'a>;
+
+    fn decode<'a>(&mut self, bytes: &'a [u8]) -> Result<DbnRecord<'a>, Rejection> {
+        // …
+    }
+}
+
+// databento-feed-codecs, src/mbp1/envelope/rev1.rs
+pub struct Mbp1EnvelopeAdapter1;
+
+impl Adapter for Mbp1EnvelopeAdapter1 {
+    type Kind = DatabentoMbp1;
+    type Codec = EnvelopeCodec2;
+    const REVISION: u32 = 1;
+    // turns a DbnRecord into Mbp1BookUpdate or Trade
+}
+```
+
+### A.7: the `catalog!` list (round 25)
+
+An explicit list of kinds for an export binary, like today's `export-ts`,
+which would write the TypeScript and Python records with precomputed ids, the
+FlatBuffers schemas and the binary catalog. Status: sketch. Round 27b
+replaced it with the SQLite catalog file and a script that builds the feed
+list from market-info.
+
+```rust
+catalog! {
+    DatabentoMbp1,
+    DatabentoStatus,
+    StxrBars1m,
+    Alerts,
+}
+```

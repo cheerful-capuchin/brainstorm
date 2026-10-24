@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-19T11:02:39Z
 title: "notify-gw alert flood: throttling, mute command, burst handling"
-summary: "Weekend 2026-10-16..19 Discord flood was a notify-gw delivery failure, not alert volume: pool stuck full, feed-ingress nacked on tickets_full -> ~200 Pub/Sub redeliveries/s, ~12 GB/day of warning logs, ~1 Discord post per 6 min. D1 alerts sub seeked to 2026-10-19T10:11:29Z (~560 dropped). D2 implemented, uncommitted in monitoring + infra: one Discord send at a time, 429 not an attempt, throttle (feed+service+event+first tag, 1 h window, summary post), per-message logs limited to 1/min, feed-ingress waits for a ticket instead of nacking, retryPolicy 10s-600s. D3 mute triggered from a phone via a cloud agent (or admin dashboard), backend = Pub/Sub control topic; open. D4 decided: lossy compression toward Discord, full alert data stored elsewhere (ClickHouse or similar; storage design open). D5: at most one post a minute; under load the cadence backs off 1 min -> 5 min -> 15 min -> 1 h and steps down after quiet windows; a lone waiting alert is posted in full, two or more become one digest (replaces the 6/min budget). sim-gw logged 231 GB on 10-13..15."
+summary: "Weekend 2026-10-16..19 Discord flood was a notify-gw delivery failure, not alert volume: pool stuck full, feed-ingress nacked on tickets_full -> ~200 Pub/Sub redeliveries/s, ~12 GB/day of warning logs, ~1 Discord post per 6 min. D1 alerts sub seeked to 2026-10-19T10:11:29Z (~560 dropped). D2 implemented, uncommitted in monitoring + infra: one Discord send at a time, 429 not an attempt, throttle (feed+service+event+first tag, 1 h window, summary post), per-message logs limited to 1/min, feed-ingress waits for a ticket instead of nacking, retryPolicy 10s-600s. D3 mute triggered from a phone via a cloud agent (or admin dashboard), backend = Pub/Sub control topic; open. D4 decided: lossy compression toward Discord, full alert data stored elsewhere (ClickHouse or similar; storage design open). D5: at most one post a minute; under load the cadence backs off 1 min -> 5 min -> 15 min -> 1 h and steps down after quiet windows; a lone waiting alert is posted in full, two or more become one digest (replaces the 6/min budget). sim-gw logged 231 GB on 10-13..15. Storage proposal P1-P7, not decided: ack only after the ClickHouse write, two subscriptions in notify-gw (store + lossy Discord), an `alerts` database with alerts + posts tables, a shared writer crate extracted from event-gw, cadence hysteresis compared with edit in place."
 related_sessions:
   - SESS-00R0BCD
   - SESS-00R0C3Y
@@ -334,3 +334,234 @@ passes), replacing the D4 budget code (`logic/budget.rs` deleted):
   alerts would go into one end-of-mute digest.
 - Q6: sim-gw-style per-message error logs: a per-call-site rate limit in
   logger2 for every service, instead of fixing each service?
+
+## Proposal: alert storage, shared writer crate, adaptive cadence (2026-10-19, not decided)
+
+The user's input:
+- Reuse the ClickHouse Cloud service, with a new database and schema that
+  notify-gw manages. Later a cloud agent with readonly access answers
+  questions about the alerts in detail. No data loss, no Discord flood.
+- The cadence backs off with the incoming rate: events every second become
+  one post a minute; after 3-5 consecutive minute reports, 5 min; after 3
+  consecutive 5 min reports, 20 min or so; up to 1 h.
+- No row by row inserts. Reuse the buffering in the component plus a batch
+  flush, as in event-gw (`clickhouse_writer.rs`). The egress writer is
+  generic enough to move into timeseries-db as its own crate.
+
+Agent's proposals follow. Nothing is implemented.
+
+### P1: "cannot lose" moves the ack to after the write
+
+- Today a folded or throttled alert is acked as soon as it is counted
+  (D4 fast acks). With storage as the record, a message is acked only after
+  ClickHouse confirms the batch that holds it.
+- The ticket table limits the batch: every alert waiting for its write
+  holds a ticket. 64 tickets and a flush every 2 s drain ~32 alerts/s; the
+  weekend burst (~460) would take ~15 s. Raise the ticket capacity with
+  `max_outstanding_messages` for more headroom.
+- Flush when the timer fires or half the tickets are held (not on bytes;
+  event-gw flushes on bytes because its NATS rows have nothing to settle).
+- Failures, the opposite of event-gw's 3 attempts then drop:
+  - Network or server error: retry in the process with backoff while
+    holding the tickets (the SDK extends the leases), then nack after N
+    attempts so the subscription's 10 s-600 s retry policy takes over.
+  - Client error (the bytes will never insert): nack, plus a dead letter
+    policy on the subscription (`max_delivery_attempts`, a dead letter
+    topic with a retaining subscription or a BigQuery subscription). The
+    only way to stop a bad batch looping without dropping it. Optionally
+    retry row by row first so only the bad row is dead lettered.
+- Duplicates are the cost: a crash after the insert and before the ack
+  redelivers. The alert's 128 bit `event_id` allows dedupe.
+- Not to copy: event-gw's `event_logs.rs` writes a failed batch to a local
+  backup file and `host.rs` treats `BackedUp` as persisted and acks. On a
+  container disk that file is lost with the instance. Possibly a hole in
+  event-gw itself; not checked further.
+
+### P2: where the write happens
+
+- A: one subscription. Each alert feeds both the Discord view and the row
+  buffer; acked after the write.
+  - For: one flow, digest counts match the stored rows exactly. Discord
+    could even post only after the write, so a digest never names an
+    alert the agent cannot find (~2 s extra, invisible at a 1 min cadence).
+  - Against: ClickHouse down -> tickets fill -> the stream stops -> Discord
+    goes quiet after 64 alerts, when something is wrong. A self alert
+    ("alert storage failing since T, N held") helps but the silence stays.
+- B: two subscriptions on the alerts topic, both read by notify-gw: a store
+  subscription (ack after the write) and the current feed subscription
+  (fast ack, lossy Discord view).
+  - For: a storage outage does not silence Discord, Discord 429s do not
+    stall storage; each path keeps simple ack rules.
+  - Against: two ticket tables, two decodes, double Pub/Sub delivery
+    (pennies). Digest counts and rows can drift a little after
+    redeliveries; the agent queries by window anyway.
+- C: event-gw subscribes and writes. Already acks after its writes, but
+  event-gw is the temporary accounting fold; wrong owner.
+- D: Pub/Sub BigQuery subscription. No code; not ClickHouse, and the
+  protobuf payload needs a topic schema to become columns.
+- E: a dedicated alert-store service. Clean, but one more deploy for very
+  little volume.
+- Agent recommends B.
+
+### P3: schema of the `alerts` database
+
+`alerts.alerts`, one row per alert:
+- `event_id` (UUID or UInt128 from w0/w1).
+- `service_name`, `event`, `tags` as LowCardinality.
+- `event_time`, `send_time`, `publish_time` (Pub/Sub), `received_time`
+  (notify-gw), DateTime64(9).
+- `trace_id`, `description`, `properties` Map, `help_url` ('' when absent;
+  the timeseries-db rules forbid Nullable).
+- `throttle_key UInt64`: the throttle's hash, so the agent can group the
+  way Discord did.
+- `payload` raw protobuf, ZSTD: lets old rows be parsed again when the
+  schema gains fields. Duplicates the columns; the volume is tiny.
+
+Engine:
+- ReplacingMergeTree on `event_id`: dedupe happens on merge, so queries
+  use `FINAL` or `LIMIT 1 BY event_id` (goes in the agent's prompt).
+- Or plain MergeTree with dedupe in queries: simpler, same query cost.
+- In-process retries resend the same bytes, so block insert dedup should
+  cover them (believed on by default in Cloud; not checked). It does not
+  cover Pub/Sub redeliveries, which land in a different batch.
+
+Sort key:
+- The readme's low to high cardinality rule gives `(service_name, event,
+  event_time, event_id)`.
+- The agent mostly asks "what happened between T1 and T2", which favours
+  time first. At this volume any query scans a few MB; order for the
+  agent's queries.
+
+`alerts.posts`, one row per Discord post: post id, kind (single alert,
+digest, mute, storage down), window start and end, cadence level, alert
+count, Discord message id, outcome. Answers "why didn't I see X" by joining
+alerts on `received_time` within the window. A `post_id` on each alert row
+is the alternative, but a throttled repeat gets its post only in a later
+window, so time windows are more accurate.
+
+Incidents (Cloud Monitoring JSON): their own table with the raw JSON and a
+few extracted columns, or skipped (Cloud Monitoring keeps its own history).
+
+### P4: schema ownership, migrations, access
+
+Where the schema lives:
+- timeseries-db, as a second database directory with its own migrations:
+  one home for ClickHouse schema, ch2rs generates the row types; notify-gw
+  schema changes go through another repo.
+- monitoring, next to notify-gw: owner and schema change in one PR; the
+  row struct is written by hand (one table, ~13 columns).
+- Either way goose keeps its version table in the DSN's database, so
+  `database=alerts` keeps the two migration histories apart.
+
+Migrations:
+- Run by hand or CI with the admin user, as today. No DDL rights for the
+  service.
+- notify-gw's `startup_check` compares `DESCRIBE TABLE` with its RowBinary
+  column list and refuses to start on a mismatch (RowBinary with columns
+  out of order can silently swap adjacent columns of the same type).
+
+Users (goose with a substituted password, like `stxr_client` in
+20261014130100):
+- `notify_gw_writer`: INSERT on `alerts.*`, plus SELECT for the restart
+  recovery in P7.
+- `alerts_reader`: SELECT on `alerts.*`, settings profile `readonly=1`,
+  `max_execution_time`, `max_result_rows`. The service also holds trading
+  data, so a bad agent query must not hurt it.
+
+Cloud agent network: its egress IPs are probably not fixed, so either the
+ClickHouse Cloud IP access list is opened (password only) or something
+sits in between: Cloud's saved query HTTP endpoints, ClickHouse's MCP
+server, or a small read proxy. What infra sets today and whether those
+Cloud features exist were not checked.
+
+### P5: shared ClickHouse writer crate
+
+What moves out of event-gw:
+- `clickhouse_writer.rs`: already generic (table name, columns, frozen
+  bytes); only the `CorrelationId` import and `event_gw.` log names are
+  local.
+- `logic/row_buffer.rs`: generic apart from indexing by `FeedTable`.
+- `logic/insert_request_pool.rs`: needs a table trait (count, index, name,
+  columns) and plain numbers instead of `EventGwDataParams`.
+- `logic/insert_flush.rs`: "3 attempts then drop" becomes a parameter
+  (drop, or hand the batch back).
+
+What alerts need on top: per-row companion data (the Pub/Sub ticket) that
+comes back with the writer's answer. `Persisted` returns the tickets to
+ack, `Failed` returns them to hold or nack. With that shape event-gw's
+older `event_logs.rs` writer (its own `PubSubAckInfo` and backup path)
+could move onto the shared crate: one writer instead of two.
+
+Location:
+- `timeseries-db/rust/crates/...` does not exist yet: timeseries-db is a
+  single crate at the repo root, so it becomes a workspace.
+- The new crate must not depend on the timeseries-db domain crate (pulls
+  trade_v2, market-info, domain). Its dependencies: clickhouse, bytes,
+  ingress_egress.
+- The local cargo `[patch]` needs an entry for the new crate (only facade
+  crates are redirected), and both users stay on the vendored clickhouse
+  fork.
+- Rejected: the ingress_egress repo (pushes clickhouse onto every engine
+  user).
+
+Alternative to buffering in the component: server-side `async_insert=1,
+wait_for_async_insert=1`, one INSERT per alert, the server batches and
+answers after the write, so ack after the answer stays safe. Against: the
+egress consumer awaits one message at a time, so a 460 burst would take
+minutes unless inserts run in parallel. Agent recommends keeping the
+component buffer.
+
+### P6: adaptive cadence
+
+D5 as implemented: ladder 1 -> 5 -> 15 -> 60 min, one busy window (2+
+alerts) steps up, one calm window steps down.
+
+The user's proposal waits for K busy windows in a row before stepping up.
+Pings with a 1/5/20/60 min ladder:
+
+| | Sustained 2 h burst | 3 min burst |
+|---|---|---|
+| K=1 (implemented) | 5 (0, 1, 6, 26, 86 min) | 3, last news at 6 min |
+| K=2 | 8 | 3, last news at 3 min |
+| K=3 | 10 (0, 1, 2, 3, 8, 13, 18, 38, 58, 78) | 4, last news at 3 min |
+
+Waiting before stepping up gives fresher news in short bursts and twice
+the pings in long ones.
+
+Other options:
+- Edit in place: ping once when the burst starts, edit that message every
+  minute with live counts (edits do not notify), post once when it ends.
+  2 pings per burst, always current. The webhook can edit its own messages
+  (`?wait=true` returns the message id, then PATCH it). Catch: a new
+  problem mid-burst stays silent unless a rule posts it, e.g. a new kind
+  gets a post, at most at the ladder's cadence. Agent's preferred option,
+  combined with the ladder: the ladder decides when to ping, the edits
+  keep the message current in between.
+- Thread per burst: digests go into a thread under the first post; only
+  thread followers are notified.
+- Ping budget: token bucket on posts (e.g. 3 at once, then 1 per 20 min).
+  Caps pings per hour directly; "next post in X" becomes less predictable.
+- Step down speed: today one level per calm window (60 + 20 + 5 min back
+  to idle). Alternative: one empty window drops straight to idle. Fits
+  bursts that stop abruptly; a burst that resumes climbs from 1 min again.
+- What counts as busy: a single kind repeating every second is already
+  merged by the throttle. Counting its repeats climbs the ladder for one
+  known problem; "2+ distinct kinds" may be the better test.
+
+### P7: what the store changes elsewhere
+
+- Q3: on startup notify-gw reads the alerts that arrived after the last
+  `posts` row and folds them into its first digest. A restart then loses
+  nothing in the Discord view either.
+- Q5: muted alerts are stored as usual; the mute only affects Discord. The
+  end of mute post counts from the store.
+- Q1/Q2: the digest footer carries the post id and time range; the agent
+  looks up the rest. No link needed.
+- Per-alert log lines can go; the store is the record.
+
+### Open for the user
+
+- P2: A or B?
+- P4: schema in timeseries-db or in monitoring?
+- P6: K for the ladder; edit in place?
+- P1: dead letter topic as the way out for batches that never insert?

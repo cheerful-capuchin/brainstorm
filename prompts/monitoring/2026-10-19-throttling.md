@@ -24,3 +24,37 @@ if we get event every second, we should compress all of them into a minute and p
 If we publish 3-5 consecutive reports each minute, then we should back off to 5-minute intervals.
 if we publish 3 consecutive 5-min intervals, then switch to once 20 minutes or something
 and then we can go up to an hour.
+
+Storing record-by-record is not useful either. I think I got a pretty good solution in event-gw/crates/event-gw/src/clickhouse_writer.rs.
+Where I keep all the buffering logic in the component and then flush a batch once in a while to the database.
+I think the egress producer is generic enough for it to be placed in ./timeseries-db/rust/crates/...
+
+What are your thoughts and ideas?
+What are the solutions and trade offs?
+The more options we exhaust, the better
+
+## Response to SESS-00R0FYF-notify-gw-alert-flood-throttle-and-bursts.md
+
+### Failures
+**Failures need the opposite of event-gw's policy.** event-gw tries 3 times, then drops the batch (it calls this "demo durability"). For alerts:
+
+- Network or server error: retry in the process while holding the tickets (the SDK keeps extending the leases). After N tries, nack, and the 10 s–600 s retry policy already in infra takes over.
+- Client error (these bytes will never insert): nack, plus a dead letter policy on the subscription. That is the only way to stop a bad batch from looping without dropping it. You could also retry row by row so only the bad row ends up dead lettered.
+
+Agreed, we need to have a distinction between different kinds of errors.
+I think the current event-gw/crates/event-gw/src/clickhouse_writer.rs:85 handles it in some way, but I don't think it exposes the error properly
+for us to react accordingly
+
+### Backup
+Don't copy event-gw's `BackedUp` path - yeah, that route is deprecated, we should not use it.
+If we start having the reliability problems: first, we have pub/sub. Then, we can start thinking about
+something like WAL in the gcs.
+
+### Ack
+I think we need the discord alerting be independent from the persistence.
+It may be that the persistence layer itself is compromised, ideally, we should send alert about that too.
+
+### Schema
+Yeah, probably having 2 different tables is fine.
+How many consumers use the Alert feed right now?
+I don't like this service_name

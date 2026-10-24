@@ -1,10 +1,11 @@
 ---
 create_time: 2026-10-14T15:06:22Z
 title: "Engine monitoring SDK: logs, panics, metrics over a dedicated NATS"
-summary: "No decisions yet. Constraints: monitor crate in monitoring/rust/crates (Sentry-like init), dedicated NATS, FlatBuffers batches, try_send, panic addresses + build id. Proposals P1-P8: land alerts-through-logs first, per-thread rings in logger2, call-site ids, typed resource/subject + key registry, JetStream capture, debuginfod bucket, atomic metrics, notify-gw rules"
+summary: "monitoring-core + monitoring facade (D13), handle in LogScope not global (D9, tick() D10), two lanes logs+metrics (D2), per-severity flood budgets (D16), argus-style events with kind + revision ids (D5, D21), global u128 event id (D22), binary catalog + stdout JSON backup (D19), no JetStream, Source (D11), build id record (D15), monitoring-gw + event-gw stores all (D17), node logging out (D1), dial9 parked, staging for unknown layouts, properties as ClickHouse JSON (D27), monitoring-wire crate with Value/IntoValue (D28), self-contained alerts (D29), monitoring-gw catch-up via event-gw over NATS (D30), build pipeline as an event stream with requirements per artifact kind (proposal). Notebook monitoring-core-proposal rev 21"
 related_sessions:
   - SESS-00PYN1M
   - SESS-00PYCE2
+  - SESS-00R0FYF
 agents:
   - claude-code:d3dec06a-db6e-4a54-b36e-6bd06a41da0b
   - claude-code:f226bb41-67de-4bfe-8890-f598c2e463bd
@@ -181,3 +182,916 @@ Position on the proposals above (not decisions):
   (2) logger2 header/channel changes, (3) event-gw unpack + metrics and
   panics tables, (4) notify-gw alert subject + liveness rules, (5) infra
   (second NATS, build id, bucket), (6) migrate the eleven binaries.
+
+## Constraint C6 and proposal P9: log floods (2026-10-20)
+
+### C6. User intent (stated, mechanism not decided)
+
+- Ideally no logs are lost. If sending cannot keep up, the user suggested
+  "digesting" logs instead of dropping them.
+- A hot loop that logs on every iteration must not send everything over the
+  wire. Example: sim-gw failed to parse a message and logged a warning per
+  request, ~200 GB (231 GB on 2026-10-13..15, see SESS-00R0FYF).
+- This questions P2's plain "drop when the ring is full".
+
+### P9. Proposal (not decided)
+
+- Budget per call site, checked in the log macro before encoding: each call
+  site gets a `static` state (registered with linkme next to the event site),
+  with a burst budget per window (default e.g. 20 per second, overridable per
+  call site and by config at runtime).
+- Over budget: no encode; the call site's suppressed counter goes up (relaxed
+  atomic). Exponential sampling inside the flood: occurrence 2^k still goes
+  through, so N repeats cost about log2(N) records with real arguments.
+- The monitor thread sweeps the call-site states on its tick and emits one
+  digest record per flooding site (event, count, first/last time in window).
+  Counts are never lost; only repeated payloads are.
+- Window check reads a coarse clock the monitor thread updates (atomic u64),
+  not a syscall.
+- Applies before every sink, stdout included (Cloud Logging volume).
+- Ring capacity reserved by severity: debug/info cannot take the last part of
+  the ring, so warn and above survive a flood of low levels; panics use the
+  reserved slot from P6.
+- What can still overflow: many distinct call sites at once. Those drops are
+  counted per thread and reported as a record.
+- Monitor thread under NATS backpressure coalesces by severity (info first).
+- notify-gw rule: a flooding call site is itself an alert ("sim_gw.x
+  suppressed 1.2M in 1 s"); this would have caught the sim-gw case at once.
+- Why at the producer and not only when sending falls behind: storage and
+  stdout volume are the cost even when NATS keeps up, and behaviour should
+  not depend on network health.
+
+## TigerBeetle comparison (2026-10-20, asked by the user; findings, not decisions)
+
+Read from ~/work/gh/tigerbeetle at 47aeb2212 (2026-08-31): `src/trace.zig`,
+`src/trace/event.zig`, `src/trace/statsd.zig`, `src/tigerbeetle/main.zig`,
+`docs/operating/monitoring.md`.
+
+- Logs are plain: formatted on the calling thread, synchronous buffered write
+  to stderr per line, runtime level filter (`log_level_runtime`, info by
+  default; debug compiled in). No rate limiting, dedup or async. Floods are
+  avoided by discipline: per-request detail is debug, and anything that
+  happens per operation is a metric, not a log.
+- Metrics/timings are a closed tagged union `Event` with typed payloads; the
+  payload fields used for aggregation are enums (tree, operation, zone,
+  commit stage). Comptime gives every (event, enum value) a slot index in a
+  fixed array allocated at init (`slot_limits`, `slot_bases`, `slot_count`).
+- `count`/`gauge`/`timing` update the slot in place (saturating add; timing
+  keeps min, max, sum, count). No channel, no strings, no allocation.
+- The replica emits on its own timer from its tick (`emit_metrics`): StatsD
+  UDP packets, sizes derived at comptime (max line size, packets per emit),
+  buffer allocated at init, sent open-loop. If packets are still in flight
+  it logs and skips the emit ("Busy") without resetting, so the slots keep
+  aggregating into the next window: backpressure lowers resolution, counts
+  are not lost. Comment: avoid "metrics killing the whole system".
+- Identity is typed (`ProcessID` union: cluster u128, replica u8), sent as
+  tags; `tigerbeetle inspect metrics` prints every metric and its
+  cardinality from the code. State is a gauge (`replica_status` enum value;
+  non-zero = alert).
+- Spans are separate (start/stop, Perfetto JSON behind a flag); slow timings
+  also warn-log as redundancy with metrics.
+
+Agent's reading (proposal, not decided): the per-call-site budget in P9 is
+the same idea as a TigerBeetle slot (call site = slot, suppressed count =
+aggregate); add enum-typed labels to the slot key, let the owning thread
+fold its slots into one record on its own timer (no cross-thread atomics
+for single-threaded engines), and on transport backpressure skip and keep
+merging instead of dropping.
+
+## C7. Lossy vs lossless (2026-10-20, user's direction, tentative)
+
+- The user thinks passing important, durable information through a logger is
+  a bad strategy, and suggested separating a lossy logger from a lossless one.
+- Lossy: "transitioned to running", "parse error"; missing one is fine.
+- Lossless: e.g. trades made for an account must not be lost. The user
+  suggested TigerBeetle-style accumulation there: if it cannot be sent now,
+  keep accumulating.
+- Also asked (open, answer pending code survey): strategy graph node values
+  (logging policy, structure-strat-template-core) reuse the same logger
+  today; does that need a different approach or a separate buffer for the
+  graph state?
+
+### Agent's answer to C7 (proposal, not decided)
+
+Three lanes, not two:
+1. Ops logs (lossy): budget per call site, sampling, digests, counted drops
+   (P9). Monitoring NATS.
+2. Aggregates (lossless totals, lossy resolution): counters, sums, gauges,
+   TigerBeetle slots; when the transport is busy, keep merging. Works only
+   for values that merge (count of trades, volume, PnL sum), not for
+   individual trades.
+3. Records that must each arrive (trades, fills, account events): not a log
+   and not an aggregate. A domain feed with a per-producer sequence number,
+   a durable store (JetStream / Pub/Sub), consumer gap detection and replay
+   from a retained buffer or the source of truth (venue / gateway). Bounded
+   memory cannot be lossless forever: past the buffer, spill to a local
+   append-only file, and if that is also exhausted the strategy stops
+   opening positions (trading without a record is worse than not trading).
+   Runs on the trading data path, never on monitoring NATS.
+
+## Strategy graph node logging (2026-10-20; findings, then proposal P10)
+
+### Findings (from code)
+
+- DSL 2 native runtime parses and validates `strategy.logging_policy` and
+  ignores it (DEC-0BQ6R item 34, PLAN-0BRQ8, stxr-client-app
+  `docs/dsl-2-native-execution.md:35`). DSL 2 emits only
+  `strategy.graph.node_error` (plain `log_error!` live; collected in
+  backtest).
+- The full node logging pipeline exists only in the disconnected DSL 1.1
+  codegen (`dsl-processor-core/src/versions/v1_1/codegen/`): per-graph
+  requested bitsets, written bits, 35 B fixed records in logger2 chunks,
+  events `strategy.graph.{node,memory_slot}.recorded`, `state.changed`.
+- Live 1.1 path used logger2 as a transport: marked records were picked off
+  on the logger thread by `RuntimeEventsFeedDispatcher`
+  (structure-strat-template-core `src/runtime_events_feed.rs`), re-encoded
+  as protobuf and published to the deployment runtime events feed; values
+  stored as text in ClickHouse `event_logs.properties["chunk_N"]`.
+- Backtest path renders text and allocates on the strategy thread
+  (`format!`, String per chunk, Vec of properties) into the BacktestResults
+  outfile -> DuckDB `feed.runtime_events`.
+- DSL 2 codegen keeps node values as stack locals; no per-subgraph state
+  struct or written set (DEC-096S8, DEC-09K6K are proposed only).
+- Tick Navigator is not built; its data source and schema are open.
+- No volume measurements. Estimate: 30 nodes, every tick, all nodes ~1 KB
+  binary per tick.
+
+### P10. Proposal (not decided)
+
+- Node values are a strategy deployment feed, not logs (follows C7): not
+  through logger2 and not through the budgeted lane.
+- One SPSC ring per strategy, strategy thread -> egress thread, allocated at
+  startup; capacity derived after policy resolution (selected nodes x fixed
+  record size x headroom ticks).
+- Generated DSL 2 code reserves the worst-case record at tick start, writes
+  selected locals straight into it (monomorphised recording / non-recording
+  variants, as 1.1 did with CAPS), then commits or aborts once the emit rule
+  is known. The ring slot is the buffer; no separate graph-state copy.
+- Record: deployment feed orderand from `DeploymentEventClock`, trigger time,
+  effective state, then values keyed by slot index (u16) plus strategy
+  revision; slot -> canonical id from the generated graph layout. Typed
+  values, no text.
+- Same encoder live and backtest (live publishes to the deployment feed,
+  backtest writes the results file) so Tick Navigator reads one shape.
+- Ring full: drop whole ticks, count them, next record carries
+  `ticks_dropped`; strategy never blocks. Bytes per tick known at policy
+  resolution, so a policy over a bandwidth cap can be refused at startup.
+- Strategy ops logs (node_error, transitions) go through the monitor lane;
+  ticks processed / ticks dropped as aggregates.
+
+## D1. Strategy graph node logging out of scope (2026-10-20, user decision)
+
+- The user: DSL 2 has no node logging, so skip it.
+- Node value logging (logging policy, P10) is not part of the monitoring SDK
+  work. P10 stays as a parked proposal, not pursued. The SDK only needs to
+  carry strategy ops logs (e.g. `strategy.graph.node_error`) like any other
+  engine app.
+- C7 lanes (lossy logs / aggregates / must-arrive records) remain open.
+
+## Decisions (2026-10-20, second round)
+
+### D2. Two lanes: logs and metrics
+The user: durable facts (trades, account updates) already travel as engine
+egress messages published to NATS, not through the logger. The monitor SDK
+has two lanes only: logs (lossy, budgeted, P9) and metrics (aggregates,
+TigerBeetle-style merge when the transport is busy). Rejects the third
+"must-arrive records" lane from the C7 answer as part of the SDK. The rule
+"if losing it makes an account, position or PnL wrong, it does not go
+through the logger" stands as the boundary.
+
+### D3. Budget per call site with a default, overridable from config
+Answer "Yeah, I would say so" to: default budget per log line, and config
+can override it at runtime. Exact defaults (per severity or one number)
+not chosen.
+
+### D4. Build id links everything
+Answer "Yeah" to item 4 (typed key registry, debug files in a bucket keyed
+by build id, stdout alert path kept as backup), with a requirement: the
+build id must be the same everywhere and connected: in the binary that
+runs, in the Docker image, in the bucket where the debug info is stored,
+and in the database next to the events.
+
+### Open: logger2 context (user question)
+The user does not understand the `pub event` field in
+structure-strat-template-core `src/log_ctx.rs` (`BacktestLifecycleLogCtx`).
+Explained (finding): the event name has two sources that disagree. The
+first token of the format string is parsed at compile time (program-events,
+alert policies, GCP JSON sink `event`); a context field named `event`
+(`EVENT_CONTEXT_KEY`, logger2-backend `event_conversion.rs`) is promoted to
+`EventLog.event` only on the NATS/Pub/Sub path, which otherwise uses the
+dispatcher default ("strategy.log"). `BacktestLifecycleLogCtx` and
+`HelpersLogCtx` use only the context field, so those sites are Unnamed in
+program-events and the name is a runtime value nobody checks. Proposed (not
+decided): one mechanism, the name at the start of the format string; drop
+the `event` context override; contexts carry only fields shared by many
+lines (sn, regime, phase).
+
+### D5. Log events follow argus: static event, typed properties, catalog description (2026-10-20)
+
+The user: follow `structure-web/packages/api/src/argus/argus.ts`
+(`argus.warn(event, properties, { description })`):
+- The event is a static str, given explicitly, so it can be extracted
+  cleanly and assigned a numeric identifier.
+- Properties are separate and clearly marked as the event's properties.
+- An optional description, also a static str, says what the event means.
+  It is not sent over the wire; it lives in the same catalog as the event
+  name.
+- A context may pass additional typed parameters; that is fine.
+- Rejected: the `event` context override and dispatcher default event names
+  ("I hate this override and defaults"). Replaces the "two sources" state
+  described under "Open: logger2 context".
+
+Agent's proposed details (not decided): description as the `///` doc
+comment (already required on log_alert!/log_emergency! by DEC-0CHAM, today
+refused on other levels); no free-text format string, sinks render
+`event key=value`; numeric id = compile-time hash of the event name, with
+the catalog rejecting collisions; the catalog checks that every site of one
+event has the same keys and types and that context keys do not collide with
+property keys; cross-service concepts (strategy revision, deployment,
+instrument) live in typed context structs or the resource, so property
+keys are event-local (answers Q1 drift).
+
+## Decisions (2026-10-20, third round)
+
+### D6. Description is an optional explicit argument, not a doc comment
+The user does not like doc comments for this; prefers an optional explicit
+argument. Rejects the agent's `///` proposal. Open: whether alert levels
+still require it (DEC-0CHAM requires a doc comment on
+log_alert!/log_emergency! today; that mechanism would change).
+
+### D7. The event string is the event name, verbatim
+Whatever is passed as the event is the event name; it does not need dots.
+Drops logger2's rule that a name is two or more dot-joined segments
+(`event_name()` returns None otherwise and the site is Unnamed). No
+separate free-text message follows from this (agent's reading).
+
+### D8. New monitoring core crate, reusing logger2
+A new monitoring core crate in `monitoring/rust/crates/` that reuses a lot
+from logger2 (macros, derive, Loggable encoding, program-events registry).
+Not a complete rewrite. Supersedes P2's "keep logger2 and replace its
+channel" framing.
+
+### Finding: static strings are passed by pointer
+Answer to the user's question. logger2 copies a `LogHeader` per log
+(`&'static str` format, `&'static [Placeholder]`, named-arg keys: fat
+pointers into the binary's read-only data, ~64 B with level/n_args);
+`StaticStr` encodes as its 16 B fat pointer (default `Loggable`, bitwise
+copy); only non-static `&str` copies (`to_string()`, allocation) and moves
+the String into the buffer. Proposed: one `static` event site per call
+site (name, id, level, description, key/type list, budget state) and the
+record carries a single 8 B pointer to it plus timestamp and values; the
+monitor thread turns the pointer into the numeric id; pointers never go on
+the wire.
+
+## Context use cases and macro expansion (2026-10-20, user questions; findings + proposal)
+
+Findings (logger2-macros `src/lib.rs` `generate_log_macro`, logger2-derive
+`LogContext` impl):
+- Expansion: link-time event-site registration; `static` placeholder and
+  named-key tables; `global_logger()`; context evaluated once; args bound by
+  `match`; sizes summed; `LogHeader` built; `prepare(total)` (spinlock,
+  may grow buffer); `reserve_bytes`; per segment `[u16 len]` then header
+  memcpy, context `encode_context`, each arg `encode_to_unchecked`
+  (decoder fn pointer + raw bytes); `commit()` (unlock + wake). Errors from
+  prepare/reserve are silently ignored. Below compile-time `LOG_LEVEL` the
+  call only registers the site and discards.
+- Derived context: per log and per field a 16 B key fat pointer, u16 length,
+  8 B decoder pointer, value bytes; each field is `clone()`d (allocates for
+  String fields).
+- Context uses found: shared fields per scope (StratLogCtx sn, regime,
+  phase), engine time (StratLogCtx.timestamp from the engine time provider,
+  sim time in backtest), feed stamping for durable runtime events
+  (Logger2EventSink; out per D2), event name override (rejected in D5).
+- argus's context (`ArgusContext`) carries trace id, time provider and id
+  maker, not properties.
+
+Proposal (not decided): record header filled by the crate = site pointer,
+timestamp from a per-thread clock the engine registers (wall clock live,
+replay clock in backtest), trace id and engine sn when present; resource
+= who (per batch); properties = what (per event); typed context kept only
+for extra typed fields shared by a scope, described by one static
+descriptor per context type (not a key pointer per field per log). Site
+descriptor holds value types/decoders, so values carry no decoder pointer.
+
+### D9. No global logger; the handle travels in the context (2026-10-20)
+The user would rather not use a global logger: pass a pointer (or similar)
+to the logger in the context, so code is easy to test. Replaces logger2's
+`global_logger()` lookup in the macro for the new crate. Agent's reading
+(proposal): the first macro argument is a scope that yields the thread's
+emitter handle, clock, sn and typed fields; the engine context implements
+it; budget and metric slots live in the handle, not in statics; the panic
+hook stays the one process-wide registration (std requires it).
+
+dev-env notebook with the full proposal: session `sess-00qkrbe`, notebook
+`monitoring-core-proposal` (2026-10-20).
+
+## Decisions from the notebook review (2026-10-20, dev-env annotations on `monitoring-core-proposal`)
+
+### D10. Scope exposes `tick() -> u64`, no Options
+Rename `sn` to `tick`: a single u64, maybe a monotonic counter. Not tied to
+the engine. The user: no Options in the trait. (Engine sn becomes the
+engine scope's tick; a plain emitter counts its own records.)
+
+### D11. Resource is called Source
+Both in "what goes where" and the wire format (`Batch.source`). Agent note:
+reuse/extend `telemetry::Source`, replacing its free-string metadata with
+typed fields.
+
+### D12. Description is never required
+Not required on alert levels either. Supersedes the open question from D6.
+
+### D13. Crate names: `monitoring-core` plus a `monitoring` facade
+`monitoring` is the nicer name to import and call; `monitoring-core` holds
+the implementation.
+
+### D14. No JSON
+The user hates JSON. Local/structured output uses Apache Avro or
+FlatBuffers; a viewing tool serves agents and humans. Humans rarely read
+raw output; agents and event-gw are the main readers. Supersedes the
+user's earlier annotation "sinks should be JSON or any human readable
+structured format" and the agent's text rendering. Open conflict: the D4
+stdout backup alert path relies on Cloud Logging matching text/JSON lines
+(infra fb80886); binary stdout is not indexed.
+
+### D15. Domain build id minted by the pipeline
+The user wants one internal build record as the single entry point from
+code to deployed instance: a domain build id that links linker build id,
+git sha, Docker digest, Cloud Run instance, etc. A pipeline builds
+everything beforehand and passes the domain build id into the instance;
+everything else is found from it. Catalog delivery: produced by that
+pipeline (sending it from the process "could be interesting", not
+chosen). Refines D4.
+
+### Restated earlier decision: no JetStream
+JetStream was rejected on 2026-09-29 (SESS-00P9RZK 8b: it adds logic to
+handling a massive number of events). The P5 JetStream capture proposal is
+withdrawn; monitoring uses core NATS only.
+
+### Questions in the review, answered in replies (findings/proposals)
+- Thread count: not known up front; one ring per emitter created at thread
+  setup, fixed registration table (`threads_max`), shared locked lane for
+  threads without an emitter (tokio pools, third-party).
+- Trace id: no trace exists in most engine apps (logger2 mints a random
+  UUID per record). Proposal: no trace in the record header; a trace id
+  is a typed context field when the code handles a message that has one.
+- `telemetry::EventId` (u128, one event instance) differs from the site
+  id (one event kind). Proposal: call ours `EventKindId`, u32 (collisions
+  checked per binary at catalog build; backend keys by build id + kind
+  id); instance identity = (instance id, batch seq, record index), filled
+  by event-gw.
+- Metrics over lossy core NATS: send cumulative counters since process
+  start (not deltas), so a lost batch loses resolution, not totals.
+- Panic stack over 64 frames: keep the innermost 64, count the rest.
+- notify-gw scope ("then it's a monitoring gw? who stores GCP
+  incidents?"): today nobody stores incidents (SESS-00R0FYF D4 open).
+  Proposal: event-gw stores everything (monitoring batches, alerts feed,
+  incidents feed); notify-gw evaluates rules and notifies.
+
+### dial9 (user asked what to take; findings, not decisions)
+Read dial9-rs/dial9 at 4f2c7ce0 (v0.5.5, 2026-10-16). Not trading-safe:
+thread-local buffer behind a mutex, ~1 MB allocation on first event (plus a
+global lock) and on every flush on the recording thread, interning hash maps
+reset per batch, stream-local type ids and no frame lengths in its format,
+tokio telemetry needs tokio_unstable and tokio >= 1.51. Proposal: no
+dependency on the engine path; copy epoch drain, drop-oldest with counter,
+u24 timestamp deltas, lazy event construction, frame-pointer walk with a
+startup self-test; avoid its global allocator profiler, perf_event/SIGPROF,
+SIGSEGV handler, lazy TLS init, on-host symbolisation. Notebook section
+"What to take from dial9".
+
+## Decisions from the second notebook review (2026-10-20)
+
+### D16. Default flood budget per severity
+One default per severity; config overrides per event.
+
+### D17. `monitoring-gw`; event-gw stores everything
+notify-gw becomes `monitoring-gw` ("a better name indeed"). event-gw stores
+everything (monitoring batches, alerts, Cloud Monitoring incidents);
+monitoring-gw handles health checks, alerts, etc.
+
+### D18. Panic stack: 64 frames is ok
+Innermost 64, rest counted.
+
+### D19. The catalog is a binary file; JSON on stdout only as a backup
+Clarifies D14: the list of all events, ids, descriptions, types collected at
+link time must be a binary file (not JSON like program-events.json). JSON
+logs on stdout are fine as a backup when NATS cannot be reached.
+
+### D20. dial9 parked
+"Let's ignore this for now." Notebook section removed.
+
+### D21. Event kinds have a revision id
+The user: the event name may stay while its fields change; we must know
+what is inside and how to decode it from a revision id. Agent's proposal
+(not decided): revision = compile-time hash of the property layout (keys,
+types, order, enum definitions), sent next to the kind id; decoding keyed
+by (kind, revision), independent of the build.
+
+### D22. Globally unique event id required
+"We have to build a globally unique event id." Agent's proposal (not
+decided): u128 = instance id (u64, minted per process start, time-ordered
+plus random) | batch_seq (48 bits, per instance, from 0) | index in batch
+(16 bits); matches `telemetry::EventId` (u128); derivable on both sides.
+
+### User requests and questions answered in replies (proposals)
+- Opt-in blocking log (not default): proposed as a per-call-site option with
+  a bounded wait (the monitor thread never blocks on NATS, so the wait is
+  short); it guarantees the record left the thread, not that it is stored.
+- Sampling configurable: yes, per-severity budget and the sampling base in
+  config, per-event overrides.
+- Trace id lives in the scope's `Fields` type: yes.
+- Header size: logger2's `LogHeader` is 72 B (repr(C), padding), not a
+  cache-line choice. SPSC does not thrash; head/tail indices go on separate
+  cache lines; smaller records touch fewer lines and fit more per ring.
+- Statics and tests: site descriptors are immutable; mutable state lives in
+  the emitter, so no test interference.
+- Metrics: deltas + periodic snapshots vs cumulative. Proposed hybrid: send
+  only slots changed since the last send, as cumulative values, plus a full
+  snapshot every N intervals.
+- NATS reconnects metric = the monitor's own connection; trading NATS
+  reconnects are the app's metric. RSS/CPU read on the monitor thread from
+  kernel counters every interval; nothing runs on the trading thread.
+- Build record practicality (user: Pulumi deploys infra locally, maybe a
+  local binary file; strategies/backtests are many and tracked in the app
+  server; app-server endpoint called by Pulumi creating structure.Build?).
+  Findings: strategy images are built by Cloud Build from the activity
+  worker (trigger-build / complete-build, `strategy_images`,
+  `strategy_runtime_revisions`), one image per template + runtime revision;
+  infra images are built by hand with `just bake` (infra/docker-bake.hcl),
+  digests pinned in `docker-repository.ts`. Proposal: mint the build where
+  the image is built, never at deploy: app-server `builds` record created by
+  the TriggerBuild activity (BUILD_ID build arg, completed by
+  complete-build) and by `just bake` through an internal endpoint; the
+  build id is written into the image (file + label), Pulumi/app server only
+  read it and record which build each deployment runs.
+
+## Decisions from the third notebook review (2026-10-20)
+
+### D23. Rings for owned threads, shared lane for the rest
+"I like this better. For our trading use-case we have the best infra. If
+you have a general application with tokio running around the threads and
+you don't care, you pay a small cost of perf." Accepts emitter rings with a
+fixed `threads_max` table plus the locked shared lane.
+
+### D24. Event id layout accepted
+EventId (u128) = instance_id 64 | batch_seq 48 | index 16; instance id
+minted per process start (time + random); batch_seq per instance. ("kk")
+
+### D25. Revision = compile-time hash of the property layout
+Accepted ("agreed"): keys, types, order, enum definitions; sent next to the
+kind id; decode by (kind, revision).
+
+### D26. Opt-in blocking accepted
+`on_full = wait(timeout)` per call site, not default, bounded. User asked
+how the timeout works (std thread-blocking timeout?). Answered (proposal):
+spin briefly, then `std::thread::park_timeout` in a loop bounded by an
+`Instant` deadline; producer sets a waiting flag and unparks the monitor,
+monitor drains that ring and unparks the producer; no Mutex/Condvar.
+
+### Open: release when the application server is broken
+User scenario: the app server has a bug, no build id can be created, but a
+release must go out. Proposal (not decided): mint the build id locally
+(time + random, no coordination); the build writes the build record,
+catalog and debug info to the bucket under that id itself (bucket = source
+of truth); the app-server `builds` table is an index fed from it,
+retried/backfilled later. Backend lookups (symbolisation, catalog) read the
+bucket by build id, so they work with the app server down. Replaces the
+earlier "app server creates the Build" proposal.
+
+## Build id cardinality and storage (2026-10-21, user questions; findings + proposal)
+
+User questions: is a build id per strategy or per strategy template? Would
+event-gw load lots from the bucket? Store u32 hashes in ClickHouse and
+post-process strings, or send strings over the wire? How do querying and
+filtering work; does the description need to be stored per row?
+
+Findings: strategy -> revisions -> template (content addressed, spec
+without parameter values; revisions differing only in values share it) ->
+images, one per (template, runtime revision), key
+`sha256(templateId + runtimeRevisionId)` (activity-worker
+`trigger-build.ts`); strategies are compiled per template, parameter
+values arrive as runtime config; one image runs many deployments and
+backtests. `event_logs` (timeseries-db `clickhouse/schema.sql`) has
+`event LowCardinality(String)`, `properties Map(String, String)`,
+`description String` per row; local ClickHouse 25.3, Cloud version not
+pinned.
+
+Proposal (not decided):
+- One build id per image build: per (template, runtime revision) for
+  strategies; deployments and backtests share it and differ by Source.
+- event-gw decodes by (kind, revision), loads an `event_kinds` table
+  (name, level, description, keys, types) at startup, and reads a build's
+  catalog from the bucket only for a (kind, revision) it has never seen;
+  undecodable batches go raw to `undecoded_batches` and are decoded later.
+- Ids on the wire, not strings: values carry no keys, so the layout is
+  needed anyway and holds the name; self-describing records would roughly
+  double record size.
+- ClickHouse: event-gw writes the name at insert (`LowCardinality`, about
+  1-2 B per row before compression), plus `kind`, `revision`, `build_id`;
+  description removed from the row, read from `event_kinds` via a
+  dictionary; properties as the ClickHouse `JSON` column type (typed
+  subcolumns per key), `Map(LowCardinality(String), String)` as fallback.
+Notebook `monitoring-core-proposal` revision 5.
+
+## Staging for unknown layouts (2026-10-21, user proposal)
+
+Terminology (user): "strategy template" = the user's strategy template
+(hundreds); our `structure-strat-template` repo commit = "runtime
+revision". Build id per (strategy template, runtime revision); builds may
+reach thousands.
+
+User: all (kind, revision) layouts fit in RAM; event-gw must load new
+definitions dynamically and must not hold records in memory waiting for
+them (no unbounded wait). Insert without waiting for metadata: without the
+layout the keys are unknown, so records with an unknown (kind, revision) go
+to a staging table; a background job looks up `event_kinds` and commits
+them from staging to `event_logs`. Delay possible, no data lost. Replaces
+the agent's "undecoded_batches" bullet.
+
+Findings: program-events.json today: event-gw 114 events, Databento
+download job 72, sim-gw 63. Layouts grow with code changes, not with
+strategy templates (shared runtime event sites), unless generated strategy
+code gets its own sites.
+
+Agent details on the user's proposal (not decided): catalog loader fed by
+bucket object notifications on Pub/Sub (layouts normally known before the
+image runs); staged row = event_id, build_id, kind, revision, time, tick,
+source, instance_id, batch_seq, ingestion_time, raw values; promoter every
+few seconds inside event-gw: fetch the catalog for pairs missing over a
+minute, decode + insert with insert_deduplication_token
+(instance_id, batch_seq, kind, revision), then delete from staging;
+staging never expires, monitoring-gw alerts on staged rows older than ten
+minutes. Notebook revision 6.
+
+## ClickHouse JSON storage (2026-10-21, user question; findings)
+
+User asked how JSON properties of different types are stored. Checked on
+ClickHouse 26.3 local: each key is a Dynamic subcolumn (per-row type
+discriminator + one packed stream per type); max_dynamic_paths 1024 per
+part, overflow into shared data (32 buckets); max_dynamic_types 32. JSON
+text inserts infer types (Int64, Float64, DateTime); RowBinary with
+input_format_binary_read_json_as_string = 0 keeps exact types (UInt32,
+Decimal(18,4)). 2 M synthetic rows, 402 keys: JSON 0.9 MB vs
+Map(String, String) 12 MB on disk; one-key filter reads 5 KB vs 12.6 MB.
+clickhouse-rs support for the binary JSON encoding not checked. Notebook
+revision 7.
+
+## D27. Properties stored as the ClickHouse JSON type (2026-10-21)
+"okay, then JSON it is." Replaces `properties Map(String, String)`.
+
+User questions: how to build a JSON value in Rust; how properties travel in
+FlatBuffers (what bytes `Record.values` holds, how to read them).
+Findings: ClickHouse RowBinary JSON = varuint key count, then per key
+varuint-length key, binary type tag, value (UInt64 04, Int64 0a, Float64
+0e, Bool 2d, String 15, DateTime64(9,'UTC') 14 09 03 'UTC', Decimal(18,4)
+1a 12 04); fixed-width values are the same LE bytes as the wire; verified
+end to end on 26.3 (33 B wire record → 93 B JSON value, exact types kept).
+event-gw encodes rows with vendored `serialize_row_binary` +
+`insert_formatted_with`; the crate supports JSON only as a string.
+Proposal (not decided): `values` = properties then context fields in
+layout order, no keys/tags/padding; fixed width LE, enum u16 index,
+string u16 length + UTF-8, optional = presence byte; event-gw builds a
+per-layout plan (prefix bytes + value reader) and converts with one walk;
+mismatched records go to staging with the error; vendored fork gets a raw
+RowBinary passthrough type, insert sets
+input_format_binary_read_json_as_string = 0. Notebook revision 8.
+
+## Format stability (2026-10-21, user question; proposal)
+
+User: how is the stability of what is sent and received ensured, so nobody
+accidentally breaks the format; rkyv? Agent's answer (proposal, not
+decided): no rkyv (needs the same Rust type on the reader; event-gw only has
+layouts at run time). Own fixed width format pinned by: encodings in one
+`monitoring-wire` crate with a sealed `Value` trait (domain types convert
+at the call site); macro emits layout type and write from the same written
+type; revision hash changes on any layout change; explicit frozen type ids
+(new encoding = new id) enforced by golden byte table tests; property test
+emitter → event-gw plan round trip plus ClickHouse round trip; catalog build
+rejects same name with different layouts and kind collisions; `flatc
+--conform` on the envelope in CI; event-gw validates every record and
+stages + alerts on mismatch.
+
+Gap found: D5's call site `{ key = value }` has no types, and a proc macro
+cannot learn `req.id`'s type for a link-time `static` descriptor. Proposed
+syntax `{ request_id: u64 = req.id }` (open, needs the user's decision).
+Notebook revision 9.
+
+## Unsupported property types (2026-10-21, user question; proposal)
+
+User: does the type have to implement a trait; how does a developer learn
+their type cannot be serialized? Proposal (not decided): sealed `Value`
+(encodings, only in monitoring-wire) + open `IntoValue { type Value: Value }`
+that domain crates implement next to their type (blanket for every
+`Value + Copy`); layout records the encoding's TYPE. Unsupported type =
+compile error at the call site with `#[diagnostic::on_unimplemented]` text
+listing supported types and the IntoValue route. Verified with rustc 1.97 in
+a two-crate test (/tmp/valdiag2): coherence accepts the blanket impl plus a
+downstream impl; the custom message shows. Notebook revision 10.
+
+## D28. `monitoring-wire`: a separate crate with no I/O, sealed `Value` + open `IntoValue` (2026-10-21)
+"like it, write it into the session and note book. It's a separate crate
+with no i/o." Accepts the proposal under "Unsupported property types":
+- `monitoring-wire` is its own crate, no I/O (no sockets, files, threads,
+  clocks; no ClickHouse or NATS dependency). Holds value types and their
+  ids, `Value`, `IntoValue`, the encoders the macro calls, and the decoder
+  that validates a record against a layout and walks its values.
+- `Value` is sealed: only monitoring-wire defines bytes.
+- `IntoValue { type Value: Value; fn into_value(&self) }` is open: domain
+  crates map their type onto an encoding next to the type; blanket impl for
+  every `Value + Copy`. The layout records the encoding's TYPE, so changing
+  a mapping changes the revision.
+- An unsupported type is a compile error at the call site with
+  `#[diagnostic::on_unimplemented]` text naming the supported types and
+  the IntoValue route.
+Agent's reading: event-gw turns the decoded values into ClickHouse
+`RowBinary` bytes itself, so monitoring-wire stays free of storage
+concerns. Still open from the same round: types named at the call site
+(`{ request_id: u64 = req.id }`), see "Format stability".
+
+## monitoring-gw without the catalog (2026-10-21, user question; proposal)
+
+User: monitoring-gw cares about process state and health; for alerts it
+would also have to load all event kind definitions to report issues. How?
+
+Findings: notify-gw (monitoring/rust/crates/notify-gw) reads the alerts
+feed (protobuf: event, description, properties map<string,string>,
+service, tags) and Cloud Monitoring incidents from Pub/Sub; it reads no
+catalog, the strings travel in the message. Infra builds one log-match
+policy per alerted event from program-events.json at the image revision
+(infra/infra/lib/program-event-alerts.ts), matching textPayload
+`[ALERT] ev.name` or severity=ALERT + jsonPayload.message; notification
+rate per deployment in infra. logger2 alert levels are ordinary levels
+(GCPLogSink JSON line); alerts reach Discord only via Cloud Logging →
+policy → incident topic → notify-gw. Throttle/digest files untracked.
+
+Proposal (not decided): monitoring-gw never loads a catalog.
+- Health: ProcessStart and Panic are fixed FlatBuffers tables in the
+  envelope schema (panic message + file:line from the hook, addresses for
+  the symboliser); every batch is a heartbeat, at least one every 5 s.
+- Alerts: the monitor thread sends alert/emergency records twice, in the
+  batch (event-gw stores) and as a self-describing `Alert` (name,
+  description, location, properties as key + ValueType id + bytes, enums as
+  variant names) on the alert subject; rendered with monitoring-wire.
+- Rules: `level_counts` per batch (level known from the site), digests
+  carry the event name, rules by name hash the name to the kind/metric id
+  with monitoring-wire's hash (name → id needs no lookup).
+- Loss: monitoring-gw catches up from ClickHouse on start (alert rows since
+  the last posted, dedup by event id); stdout JSON fallback matched by one
+  generic Cloud Logging policy on severity ALERT/EMERGENCY; per-event
+  policies and program-events.json go away, their rate limits become
+  monitoring-gw throttle config by event name. Answers open question 3.
+Notebook revision 12.
+
+## D29. Alerts are fat, self-contained messages (2026-10-21)
+"because we assume that the number of alerts is going to be small, we can
+use fatter messages to send the alerts, so the monitoring gw has to do less
+work. I guess it's fine." Accepts the `Alert` message: name, description,
+location, properties with strings; monitoring-gw gets the fully contained
+record and loads no catalog.
+
+## D30. Catch-up through event-gw over NATS, not ClickHouse (2026-10-21)
+"I think it should be a request via NATS to the event gw, not a direct
+database query." On boot monitoring-gw requests the missing events from
+event-gw, builds a digest, and publishes it to Discord or any other
+notification sink. Replaces the agent's ClickHouse catch-up.
+
+User's summary of the monitor thread's sinks, confirmed: (1) NATS batch
+feed (event logs + metrics), (2) NATS alerts feed, (3) JSON on stdout when
+NATS does not work. Agent's details (proposal): the alert subject also
+carries Panic and ProcessStart; the stdout fallback carries every record
+within budgets, one generic Cloud Logging policy on ALERT/EMERGENCY; the
+panic hook always writes one stderr line; event-gw knows "since the last
+alert published" from the alerts feed monitoring-gw publishes (D17),
+answers with full Alert messages built from rows + event_kinds, capped;
+dedup by event id; monitoring-gw retries with backoff while event-gw does
+not answer.
+
+Open: which deployments monitoring-gw expects heartbeats from after a boot
+(it learns sources only from traffic). Candidates: ask event-gw for sources
+seen recently in the same catch-up request, or the app server's live
+deployments.
+
+## One event shape, metrics for monitoring-gw, control lane (2026-10-21, user questions; proposal)
+
+User: why are panic and process start a different kind of message?
+monitoring-gw should read the metrics as well. Later, monitoring-gw should
+talk to services to check health or run some logic; how?
+
+Agent's answer: no reason beyond the reserved panic slot. Proposal (not
+decided):
+- One event shape. `runtime.panic` (emergency; thread, message, location,
+  addresses as an array of u64, frames_omitted) and `process.start` (info;
+  build id, git sha, Cloud Run revision) are ordinary events defined in
+  monitoring-core; the panic hook only writes into the reserved slot.
+  Restarts = a new instance_id for the same source on the metrics lane.
+  New value type: array of a fixed width type (u16 count + elements;
+  ClickHouse `1e <elem>`, checked on 26.3).
+- Lanes as subjects `mon.<source_type>.<source_id>.<instance_id>.{logs,
+  metrics,alerts,control}`. Batch shrinks to source, batch_seq, records;
+  level counts, suppressions, drops and thread idle time become built-in
+  metrics (`monitoring.records{level}`, `monitoring.suppressed{event}`,
+  `monitoring.dropped{thread}`, `monitoring.thread.idle_ms{thread}`).
+- monitoring-gw reads the metrics lane in full: heartbeat (no message for
+  3 intervals), restarts, crash loops, error counts, floods, app metric
+  rules by name; snapshots carry the slot table (index, name, kind, labels
+  as strings), so no catalog.
+- Control: NATS request/reply on the instance's control subject, answered
+  by the monitor thread. `Request { op, args: [Property], deadline_ns }`,
+  reply is an `Event`. Built-ins: monitoring.ping, monitoring.health,
+  monitoring.snapshot, monitoring.budget.set. App ops registered at setup:
+  `on_request` (runs on the monitor thread, atomics only) or
+  `forward_request` (bounded queue drained by the engine between messages;
+  full = busy; no answer before the deadline is a health signal). Only
+  monitoring-gw may publish on control (NATS permissions per user).
+Notebook revision 14.
+
+## D31. Event logs and metrics are separate messages (2026-10-21)
+"I think it's reasonable to separate a batch of the event logs from the
+metrics. They have different lifetimes and, probably, different logic
+associated with them." Separate messages, subjects, tables and retention.
+
+User questions answered (notebook revision 15): what the built-in metrics
+are (counters monitoring-core keeps itself: records per level, suppressed
+per event, dropped per thread, thread idle time, RSS/CPU/uptime); where
+instance_id is (in `Source`, first field of every message; the subject
+token is only for subscribing); what MetricSample/MetricSlot are. Proposal
+(not decided): `Source` table = parent_type, parent_id, source_type,
+source_id, instance_id, build_id; MetricSlot dropped from the wire: each
+`MetricSample` carries name, labels as strings, kind (counter/gauge),
+value (counter total since start, gauge current); `Metrics` = source, seq,
+time_ns, snapshot flag, samples; timing sent as four samples; in-process
+slots never leave the process.
+
+## TigerBeetle metrics (2026-10-21, user question; findings)
+
+Read ~/work/gh/tigerbeetle at 47aeb2212 (2026-08-31): src/trace.zig,
+src/trace/event.zig, src/trace/statsd.zig, docs/operating/monitoring.md.
+Closed tagged union `EventMetric`/`EventTiming`, enum-typed label fields,
+comptime slot = base + enum index, exhaustive no-collision test; count
+saturating add, gauge last value (i65), timing min/max/sum/count. Every
+10 s (trace_emit_timeout) DogStatsD text lines over UDP to a local agent,
+packets <= 1400 B, `tb.<name>:<v>|c|g|#cluster:…,replica:…,<label>:…`;
+names and tags in every line; timing = 5 lines. Max line size computed at
+comptime, buffers fixed. Open loop; if packets still in flight, skip the
+emit and log. Slots cleared after emit: counters are deltas (lost packet
+loses the increase). No instance id; restart visible via `replica_start`
+gauge. No alerting in TB; states as gauges (`replica_status`,
+`replica_sync_stage`), docs say alert when not 0. `tigerbeetle inspect
+metrics` lists metrics and cardinality.
+Agent's takeaways (proposal): compile-time max Metrics message size, skip
+send while previous in flight, slot no-collision test, app states as
+numbered gauges; keep totals (not deltas) because NATS is lossy. Notebook
+revision 16.
+
+## Counter overflow (2026-10-21, user question; proposal)
+
+User: what happens when total counters overflow? Agent's answer
+(proposal, not decided): counters are u64 totals since process start,
+`saturating_add` (release `+` wraps silently); a u64 lasts 584 years at one
+increment per ns, 58 years at 10 GB/s of bytes, so overflow means a bug.
+Monitor thread emits `monitoring.metric.saturated` once per slot at
+u64::MAX and counts `monitoring.saturated`; debug assert per `count()` add
+< 2^48; readers compute increases only within one instance id (new
+instance = new baseline, no wrap logic), a decrease within one instance is
+counted as a bug; gauges i64, set not added, `u64` above i64::MAX clamped
+and counted. Wire: MetricSample gets `counter: uint64` and `gauge: int64`
+fields instead of one `value: int64`. Notebook revision 17.
+
+## D32. Saturating counters (2026-10-21)
+"okay, saturating add is fine." Counters are u64 totals since process
+start, added with saturation; details as in "Counter overflow".
+
+## D33. `AmountSemantics` enum, no boolean flags (2026-10-21)
+"let's use the enum instead of a boolean. Call it 'amount semantics' with
+snapshot/increment. Don't use boolean flags." `Metrics.snapshot: bool`
+becomes `amount_semantics: AmountSemantics` with `Snapshot` (every metric)
+and `Increment` (only metrics changed since the last message). Agent note:
+in both, a counter's value is its total; `Increment` names which metrics
+the message holds, not that values are increases. Notebook revision 18.
+
+## D34. Metrics: full snapshots only, not stored for now (2026-10-21)
+User asked why not send all values. Agent: changed-only saved bandwidth
+that is not worth it (~20 KB per process per 10 s); full messages make a
+lost message free and let a reader starting mid-way see everything.
+User: "I'm not planning to store those in clickhouse right now. Let's send
+snapshots only for now." Every metrics message carries every metric
+(counter totals, gauge values); `AmountSemantics` and `snapshot_every`
+removed (D33's no-boolean rule stays general). Metrics are read only by
+monitoring-gw for now; event-gw does not store them. Agent details: a
+timing with no calls in the interval sends count and sum only; closed
+label sets give a compile-time max message size; control op renamed
+`monitoring.metrics` (send a metrics message now). Notebook revision 19.
+
+## Build pipeline as an event stream (2026-10-21, user proposal; findings + proposal)
+
+User's proposal: the build pipeline is one function on a Platform API like
+Heimdall (`function* build_pipeline(p: Platform.Trait)`), so all steps are
+followed locally. A build combines git, image, toolchain, binaries, linker,
+monitoring registry (catalog), debug info. Event sourced: first command
+`builds.create`, then events with the build id and an orderand, then
+`builds.commit`. Application server primary (stores the event stream and a
+materialised build record, assigns a snowflake id); bucket as redundancy
+when the app server fails, and a job pulls bucket builds into the database
+once the app server is back. Avro schemas of the events stored in the
+database and the bucket. Catalog and debug info files in a bucket, events
+hold references. Step latency from the events. Endpoints internal, callers
+must be in the structure org. Offline id: u64 from time and randomness.
+The build id is embedded in each binary. Unsure about the API and how to
+handle docker bake. This reverses the earlier "bucket as source of truth"
+proposal.
+
+Findings:
+- `just bake` labels the image with one repo's commit (`source_revision`
+  from `io.stxr.source-repo`), but the Docker context is the whole
+  workspace (`COPY . ./`) and `.cargo/config.toml` patches point at local
+  checkouts: the binary is built from every reachable repo at the laptop's
+  state, uncommitted changes included.
+- The builder stage cross compiles (`--platform=$BUILDPLATFORM`); on an
+  arm64 host the amd64 binary cannot run, so a catalog printed by the
+  binary with a flag does not work in the build.
+- Target dir is a cache mount, release has no debug info; only binaries
+  leave the builder. `just bake` already reads the digest from buildx's
+  `--metadata-file`.
+- App server already has snowflake ids (41 ms since 2026-01-01 | 10
+  instance | 12 sequence; api uses instance 1), the append-only
+  `avro_schemas` table and Avro single object encoding (app-db
+  `src/avro/`). Strategy images go through the `build-strat` workflow
+  reducer (Validate, PrepareTemplate, TriggerBuild, PollBuild, …).
+
+Agent's proposal (not decided):
+- Pipeline reads the source before the build (every repo in the context
+  with its commit, refuse dirty trees), not from the image label after.
+- Enforcement in four layers: receipts from every step, `commit` takes all
+  (type error if a step is missing); the host records `Failed { step }` and
+  step start/end itself; the server refuses commit unless the record has
+  every part its kind requires; deploy refuses a digest without a committed
+  build, and `process.start` carries the build id plus the linker build id
+  read from the process's own ELF note, monitoring-gw alerts on unknown or
+  mismatch.
+- One Avro `BuildEvent` schema, union body (Created, SourceSnapshotted,
+  ToolchainResolved, BinariesLinked, DebugInfoStored, CatalogStored,
+  ImagePushed, Committed, Failed); envelope build_id u64, seq u32
+  (orderand, assigned by the pipeline as single writer), started_at, time;
+  server adds receive_time and origin enum {Direct, BucketImport}; identity
+  (build_id, seq), append accepts seq = last + 1, identical resend is a
+  no-op; `builds` row folded in the same transaction; app server deploys
+  before writers use a new branch.
+- Write every event to both the app server and the bucket on every build
+  (a path used only in outages is untested when needed); event recorded if
+  either accepts; bucket objects create-only (`ifGenerationMatch=0`) at
+  `builds/<id>/events/<seq>.avro`; import job runs on a schedule and on
+  app server start and appends missing seqs.
+- Offline id: a snowflake with an instance id from a reserved range (e.g.
+  512-1023, random) and a random sequence; same column, time ordered,
+  recognisable as offline.
+- Bake stays the build definition; the pipeline replaces the `just bake`
+  shell. `BUILD_ID` build arg embedded with `env!` in the binary crate
+  (only that crate recompiles), replacing the `/etc/stxr/build-id` file;
+  explicit `--build-id`; debug info split in the builder stage; catalog
+  read from a link section of plain-byte descriptors (`objcopy
+  --dump-section`), not by running the binary; a `<service>-artifacts`
+  target exporting debug files, catalogs and a manifest, built in the same
+  bake call as the image.
+- Strategy images: the existing workflow writes the same events
+  (TriggerBuild creates, Cloud Build uploads artifacts, CompleteBuild
+  appends and commits); shared contract is the schema and commit rule, not
+  the generator.
+- The infra pipeline runs as a local CLI implementing `Platform` natively
+  (no sandbox for our own code); could run in Heimdall later.
+Notebook revision 20 (section "Build record" rewritten).
+
+## Required build facts per artifact kind (2026-10-21, user question; findings + proposal)
+
+User: how is it defined that a set of events/steps is required? TS
+services have no linker or debug metadata.
+
+Findings: application-server and activity-worker images are a rolldown
+bundle compiled with `bun build --compile` (infra `images/structure-web`
+Dockerfile, package justfiles); the application-server image also ships
+Rust-built WASM (application-server-core, id, DSL compiler); status-board
+runs `bun run src/server/main.ts` from source; Rust services are ELF from
+the `rust-engine` Dockerfile.
+
+Agent's proposal (not decided):
+- Requirements follow the artifacts a build produces, not the service.
+  Closed `ArtifactKind`: ElfExecutable (GNU build id, DWARF, monitoring
+  catalog, toolchain), BunExecutable (bundle sha256, source map,
+  toolchain; no catalog yet), WasmModule (sha256, toolchain), ScriptSource
+  (sha256 of sources + lockfile, toolchain).
+- One exhaustive requirements table in an app-server TS module (`satisfies
+  Record<ArtifactKind, …>`), imported by the pipeline; receipt types
+  derived from it. Not applicable = field absent from the variant, never
+  optional. Commit parses the open record into the committed type and
+  answers `missing: [{ artifact, fact }]`. Table has a revision stored at
+  commit; rule changes apply to new builds only.
+- Guards against under-declaring: after push, scan the image filesystem for
+  ELF/WASM magic outside base image paths, every hit must be declared; at
+  run time the process reports its identity (GNU build id, or bundle hash
+  compiled in via rolldown `define`) and monitoring-gw alerts if the build
+  has no such artifact.
+- Events keyed by artifact index: ArtifactDeclared, ArtifactIdentified
+  (GnuBuildId | Sha256), ToolchainRecorded (Rust | Bun | WasmPack |
+  BunRuntime), DebugDataStored (Dwarf | SourceMap), CatalogStored; replace
+  BinariesLinked/DebugInfoStored. Committed carries the requirements
+  revision.
+Notebook revision 21.

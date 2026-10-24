@@ -71,4 +71,11 @@ Maybe we'll even accept some kind of collector that will give us the metrics the
 What are your thoughts and suggestions. How can we implement it?
 
 
+## Accepted suggestions
 
+### Each event gets a numeric id at compile time
+Because we know all the logged values at compile-time,
+we can replace the plain strings, with numerical identifiers
+and as long as we keep the build id and revision,
+we can always lookup the id in the generated table of strings.
+Therefore, the logs collector can then map the ids to string literals.

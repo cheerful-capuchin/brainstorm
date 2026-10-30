@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-14T15:06:22Z
 title: "Engine monitoring SDK: logs, panics, metrics over a dedicated NATS"
-summary: "monitoring-core + monitoring facade (D13), handle in LogScope not global (D9, tick() D10), two lanes logs+metrics (D2), per-severity flood budgets (D16), argus-style events with kind + revision ids (D5, D21), global u128 event id (D22), binary catalog + stdout JSON backup (D19), no JetStream, Source (D11), build id record (D15), monitoring-gw + event-gw stores all (D17), node logging out (D1), dial9 parked, staging for unknown layouts, properties as ClickHouse JSON (D27), monitoring-wire crate with Value/IntoValue (D28), self-contained alerts (D29), monitoring-gw catch-up via event-gw over NATS (D30), build pipeline as an event stream accepted, debug info export open (D31), requirements per ArtifactKind (D32), pipeline local for now, infra images only, strategies excluded (D33), this round build id only (D34). build entity apart from monitoring (D35). Notebooks monitoring-core-proposal rev 21, build-id rev 3; Abandoned 1h configurable (D36), image tied both ways (D37), BuildId+schemas in platform-core (D38-39), one build = one image (D40), build id sole identity (D41), builders file (D43), TS CLI (D44); agents are the main users (rev 4 proposal), one builds CLI (D46), timeline from revision create time (D47). build-id notebook rev 5; build service all Rust, http->handler->service->repository, no zod, TS only I/O (D48); no Port suffix (D49), platform-core rust/crates layout (D50), contracts crate in application-server (D51), no V1 Avro types per SESS-00RRP6T D24 (D52); reads open to stxr.io (D53), build-contracts (D54), builds program TS + wasm (D55), StatementId catalog (D56); ts/packages/platform-core (D57), argus naming in Rust (D58), typed ObjectOp with generic ObjectRef (D59), host entropy (D60), Rust snowflake own instance id (D61); build-service-implementation notebook rev 4 (event sourced builds with feed_heads orderand + builds:changes, argus macros in wasm custom section, Rust-owned tables + startup TableRevision, proposals); drizzle schema hand-written, not generated (D62), orderand per feed, no global sequencer (D63), Avro stored + mapper to feed encoding (D64), no as_of_ fields (D65); notebook rev 5 proposals: Option-free create/decide_append split, views from fold, domain_events table, feed_orderands, Read Committed, builds:changes tail_cursor, protobuf feed mapper, create request_id; typed assembler (D66), copy table revision idea (D67), event sourcing go (D68), single domain_events table (D69), tail_cursor (D70), create request_id (D71), core instance id 2 (D72), application-server/AGENTS.md (D73); rev 6 proposals: Read Committed + statement access rule, feed_kind/subject table, mapper in application-server-core"
+summary: "monitoring-core + monitoring facade (D13), handle in LogScope not global (D9, tick() D10), two lanes logs+metrics (D2), per-severity flood budgets (D16), argus-style events with kind + revision ids (D5, D21), global u128 event id (D22), binary catalog + stdout JSON backup (D19), no JetStream, Source (D11), build id record (D15), monitoring-gw + event-gw stores all (D17), node logging out (D1), dial9 parked, staging for unknown layouts, properties as ClickHouse JSON (D27), monitoring-wire crate with Value/IntoValue (D28), self-contained alerts (D29), monitoring-gw catch-up via event-gw over NATS (D30), build pipeline as an event stream accepted, debug info export open (D31), requirements per ArtifactKind (D32), pipeline local for now, infra images only, strategies excluded (D33), this round build id only (D34). build entity apart from monitoring (D35). Notebooks monitoring-core-proposal rev 21, build-id rev 3; Abandoned 1h configurable (D36), image tied both ways (D37), BuildId+schemas in platform-core (D38-39), one build = one image (D40), build id sole identity (D41), builders file (D43), TS CLI (D44); agents are the main users (rev 4 proposal), one builds CLI (D46), timeline from revision create time (D47). build-id notebook rev 5; build service all Rust, http->handler->service->repository, no zod, TS only I/O (D48); no Port suffix (D49), platform-core rust/crates layout (D50), contracts crate in application-server (D51), no V1 Avro types per SESS-00RRP6T D24 (D52); reads open to stxr.io (D53), build-contracts (D54), builds program TS + wasm (D55), StatementId catalog (D56); ts/packages/platform-core (D57), argus naming in Rust (D58), typed ObjectOp with generic ObjectRef (D59), host entropy (D60), Rust snowflake own instance id (D61); drizzle hand-written (D62), orderand per feed, no global sequencer (D63), Avro stored + mapper (D64), no as_of_ (D65); typed assembler (D66), copy table revision idea (D67), event sourcing go (D68), single domain_events table (D69), tail_cursor (D70), create request_id (D71), core instance id 2 (D72), application-server/AGENTS.md (D73); load returns Result (D74), Read Committed + docs/decisions records (D75), 128-bit ULID event ids not uuid (D76), builder list Avro (D77), Rust source of truth for event schemas, D39 revised (D78), feed mapper in application-server-core (D79); notebook rev 7 proposals: orderand scopes, entity-keyed domain_events, event_audits, event_publications"
 related_sessions:
   - SESS-00PYN1M
   - SESS-00PYCE2
@@ -1637,3 +1637,88 @@ revision 6 proposes (not decided):
   content change).
 Open: Read Committed, domain_events structure, load NotFound vs Option,
 mapper style, builder list format, D39 revision.
+
+## Decisions from the build-service-implementation review (2026-10-30, dev-env annotations on revision 6)
+
+### D74. The write path loads with `Result`, not `Option`
+"Result<>, not Option": `BuildEventStore::load -> Result<Stream,
+BuildsError>` with `NotFound` inside (GPT Sol's side). Rejected: Fable's
+`find -> Option<Stream>` + `ok_or` per use case.
+
+### D75. Read Committed for the build writes; its reasons go into decision records
+"okay, then it's fine to use read committed. I think there should be a list
+of the decision documents in the application-server/docs/decisions
+explaining why it's safe". Writes run at Read Committed under the lock rule
+(a write transaction only locks, reads locked rows, reads append-only
+tables, or writes). application-server gets a `docs/decisions` folder whose
+records explain why it is safe; the list of records is part of the plan.
+(Convention not chosen by the user: sim-gw uses local `ADR-NNNN`,
+stxr-client-app uses KB-generated `DEC-<id>` with KB pointer entries; an
+earlier version of this entry wrongly attributed ADR-NNNN to both.)
+
+### D76. Event ids are 128 bits, minted as ULIDs; not typed as UUID
+"128 bits - yes. UUID -> no, I think there may be multiple different
+approaches we take for the event ids. Unless uuid here means 128 bit
+number. I think ulid is fine". The id is a 128-bit number; ULID minting is
+fine; the column must not claim UUID semantics (storage type open).
+
+### D77. Builder list is Avro
+"AVRO", answering JSON vs Avro for the Pulumi-managed builder list (D43).
+Rejected: the JSON file proposed for Pulumi's convenience.
+
+### D78. D39 revised: Rust is the source of truth for build event schemas
+"yeah, we're moving to rust and it's the source of truth"; "we go away from
+typescript and rust is the source of truth". The schema is derived from
+Rust types in the platform-core repo's Rust crate (today named
+platform-wire); the core registers it in avro_schemas at startup. Replaces
+D39's TypeScript package and app-db registration.
+
+### D79. The feed mapper lives in application-server-core
+"I think application server core is a fine place for that". Placement only;
+how it fills the message (by hand vs a codec producer) is not stated.
+
+### Questions and direction from the same review (not decided)
+- Rename platform-wire: "maybe instead of -wire, we call it schema, so it
+  removes the confusion from contracts and data feeds?"
+- domain_events structure rejected as proposed: orderand must not be tied
+  to the feed kind ("I don't think that all the trading accounts feeds will
+  share the same orderand, probably all the trading accounts that belong to a
+  parent like user or project or org"); feed revisions will change while
+  "the orderand must be kept"; "check that first [the data feed catalog
+  brainstorm sessions] and be sure that our schema will not end up fucked up
+  and needed migrations"; "The caller, origin, is probably something that
+  should stay away from that table. This is more of an audit log than the
+  domain event"; "feed descibes many events, here we store a single one. So,
+  we need some very clear naming and decisions here".
+- "Does tigerbeetle have a similar feature where it notifies on changes?"
+  (publishing).
+- "well, we could send avro within feeds if you think that's better".
+Sixth advisor round (advisor-fable, advisor-gpt-sol-copilot). Notebook
+revision 7 proposes (not decided):
+- Events table from the data feed catalog material (catalog never names who
+  scopes our orderands; every catalog id is a hash that may change):
+  `domain_events(entity_kind, entity_id bytea 8..32, seq, scope_kind,
+  scope_id bytea, orderand, event_id bytea16, trace_id bytea16, event_kind,
+  record_time, record)`, PK (entity_kind, entity_id, seq), unique (scope,
+  orderand), unique event_id; `orderand_scopes(scope_kind, scope_id,
+  last_orderand)`; `event_audits(event_id, caller, origin)` same tx, no view
+  reads it; no feed kind/subject/revision stored. Orderand scope stored per
+  event, chosen by the entity's rule (`Builds`; later
+  `TradingAccountsOf(parent)`), `Lineage {First, Replaces(scope)}` floor so
+  moved entities keep increasing orderands. Names: entity (GPT Sol) over
+  stream (Fable); event_kind kept (Fable) vs omitted (GPT Sol).
+- Publish position `event_publications(publication, scope_kind, scope_id,
+  published)` (GPT Sol) over Fable's `event_outbox`; post-commit trigger +
+  scheduler backstop, single publisher, replay op (from tigerbeetle CDC,
+  which is a poller, not push); no Avro on the feed (catalog D5 FlatBuffers).
+- Event ids bytea(16) (both measured); request_id stays uuid.
+- Rename platform-wire: platform-schema (user's word, Fable) recommended vs
+  platform-avro (GPT Sol).
+- Avro body as a tagged record with one optional field per variant
+  (apache-avro 0.22 cannot resolve unions into Rust types; GPT Sol
+  experiment); refuse events whose writer schema is newer than the binary's.
+- Decision records: stxr-client-app DEC convention, twelve records listed.
+- Builder list written by a `builders` CLI command next to `invites` (core
+  wasm), not Pulumi; sweep batch 10 (effect bound); entropy sized per op.
+Open: events table, publish position, crate name, mapper style, builder
+list writer, decision records + KB pointers.

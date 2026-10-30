@@ -1,12 +1,13 @@
 ---
 create_time: 2026-10-26T13:54:59Z
 title: "Review of event-gw PR #22: logs, account events and positions over NATS"
-summary: "Review prep for event-gw PR #22 (logs-requests, head a8848b28): notebooks 01-04 in sess-00rk8nk (overview, R1-R28, message lifecycle, feed-ingress comparison). Top: unpublished db submodule commit, redelivery rewrites position history, single instance not enforced, ring stalls on a lost insert answer, protos say tail cursor is per-list. Buffering thread: ipc sets no Pub/Sub flow control; 256-byte charge and 10 MiB/1 MiB sizes are guesses, derive from flow control + parts/s; async_insert server batching REJECTED (HTTP per message too costly at strategy traffic). User writes the review; only gh: \"...\" annotations get posted"
+summary: "event-gw PR #22 review, notebooks 01-05 in sess-00rk8nk. Buffering: ClickHouse must be the limit, sizes are runtime config not consts, TigerBeetle style. 05 proposes: Pub/Sub flow control, 1 insert/table/interval, park not refuse, batched acks; native TCP client is later. async_insert server batching REJECTED"
 related_sessions:
   - SESS-00P9RZK
   - SESS-00QKRBE
 agents:
   - claude-code:e051a666-915d-4600-9887-c1a8aa9ce656
+  - claude-code:d7b70bde-da6e-4217-9b6b-687840f15546
 ---
 
 # SESS-00RK8NK: Review of event-gw PR #22: logs, account events and positions over NATS
@@ -147,3 +148,58 @@ control gap (not set at all) as the first thing to fix regardless of this PR.
 
 User is continuing this thread with another agent; this record is the
 hand-off.
+
+## Buffering, continued: user constraints (2026-10-26, later)
+
+New agent picked up the hand-off. The user set these constraints for the
+event-gw buffering redesign:
+
+- Expected load: thousands of messages per second (strategy traffic).
+- Throughput must be limited by how fast ClickHouse can write, nothing else
+  (no guessed byte budgets that bite first).
+- Sizes must NOT be compile-time constants (the PR's
+  `ROW_OVERHEAD_ESTIMATE_BYTES`, `DEFAULT_FEED_ROW_BUFFER_CAPACITY_BYTES`,
+  flush threshold, `WRITER_LATENCY_BUDGET_MS` are all `const`).
+- Follow TigerBeetle's ideas (local checkout `~/work/gh/tigerbeetle`):
+  static allocation at startup from runtime limits, bounded queues,
+  back-pressure to the producer.
+- Asked: what are ClickHouse's limits, and can we use the native TCP
+  protocol instead of HTTP (open question, being researched).
+
+## Notebook 05 (2026-10-26, later): proposal, not decided
+
+`05-buffering-limited-by-clickhouse` in sess-00rk8nk. Research facts (from
+ClickHouse master source and docs, TigerBeetle checkout, PR head a8848b2):
+
+- Today's real limit is Pub/Sub flow control: ipc default 50 outstanding per
+  subscription, acks only after storage, 5 s flush timer gives about 14-19
+  msg/s per subscription. ipc also acks one message per RPC. NATS is core
+  NATS (async-nats 65 536 per subscription buffer), dropped when the budget
+  is spent.
+- PR writer spawns one task per insert: up to 122 concurrent inserts, 1 MiB
+  early flush; no settings sent. ClickHouse `async_insert` defaults ON since
+  26.2 (Cloud is 26.x, PR compose 26.6), so R8 changes behaviour today.
+  `event_logs` is plain MergeTree with `non_replicated_deduplication_window`
+  0: retries duplicate rows.
+- ClickHouse limit that matters is parts: delay from 1000 active parts per
+  partition (sleep up to 1 s), TOO_MANY_PARTS 252 at 3000, guidance about 1
+  insert/s and 1k-100k rows per insert; merge pool 32 server-wide.
+- Native protocol: official crate HTTP only (issue #226); klickhouse
+  allocates per value (rejected as a proposal); clickhouse-c-rs right shape
+  but 2 months old; own insert-only client estimated 1.2-1.8k lines.
+  Benchmarks: gain is from columnar Native format, not TCP.
+
+Proposal (awaiting the user's call): flow control per subscription from
+config; in-flight table = sum of flow control + NATS slots; stage rows then
+commit, park messages that do not fit (no refuse/drop/nack); one insert in
+flight per table, flush when answered and the interval (default 1 s,
+config) passed, no byte threshold; timeout from measured median latency,
+retry until answered with backoff + `insert_deduplication_token`; one ack
+RPC per insert; consts only as ceilings, sizes from config validated at
+startup and preallocated. Order: those first, then Native columnar format
+over existing HTTP client, then own native TCP client.
+
+Open questions put to the user: which feed carries the thousands of
+msg/s (Pub/Sub event_log or NATS; NATS would need JetStream
+`max_ack_pending` for flow control), and real payload sizes / rows per
+message.

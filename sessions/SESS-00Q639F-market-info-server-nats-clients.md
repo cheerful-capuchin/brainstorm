@@ -3,10 +3,13 @@ create_time: 2026-10-09T10:47:11Z
 title: "Market info server as the only reader of market-info.rkyv, clients over NATS"
 summary: "market-info-server as the only reader of market-info.rkyv; sans-I/O clients over NATS. Q1 answered: wide wire types + SBE-level constraints as data (not CUE), handwritten domain types. Built prototypes/market-info-protocol: protocol DSL + protocol-gen (fbs, constraints, view traits, conformance tests, FlatBuffers codec named by digest), sans-I/O client (OutgoingRequest, RepositoryLoader) and server, NATS e2e in Docker; correlation id in generated frames. No user decisions beyond building it."
 related_sessions:
+  - SESS-00RR74R
   - SESS-00Q613G
   - SESS-00P9RZK
   - SESS-00PXT2F
   - SESS-00PM9HX
+agents:
+  - claude-code:47546fef-123a-48ba-86d5-074d82bf7c20
 ---
 
 # SESS-00Q639F: Market info server as the only reader of market-info.rkyv, clients over NATS

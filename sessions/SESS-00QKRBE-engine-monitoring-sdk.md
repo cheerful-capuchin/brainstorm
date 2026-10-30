@@ -1,14 +1,17 @@
 ---
 create_time: 2026-10-14T15:06:22Z
 title: "Engine monitoring SDK: logs, panics, metrics over a dedicated NATS"
-summary: "monitoring-core + monitoring facade (D13), handle in LogScope not global (D9, tick() D10), two lanes logs+metrics (D2), per-severity flood budgets (D16), argus-style events with kind + revision ids (D5, D21), global u128 event id (D22), binary catalog + stdout JSON backup (D19), no JetStream, Source (D11), build id record (D15), monitoring-gw + event-gw stores all (D17), node logging out (D1), dial9 parked, staging for unknown layouts, properties as ClickHouse JSON (D27), monitoring-wire crate with Value/IntoValue (D28), self-contained alerts (D29), monitoring-gw catch-up via event-gw over NATS (D30), build pipeline as an event stream with requirements per artifact kind (proposal). Notebook monitoring-core-proposal rev 21"
+summary: "monitoring-core + monitoring facade (D13), handle in LogScope not global (D9, tick() D10), two lanes logs+metrics (D2), per-severity flood budgets (D16), argus-style events with kind + revision ids (D5, D21), global u128 event id (D22), binary catalog + stdout JSON backup (D19), no JetStream, Source (D11), build id record (D15), monitoring-gw + event-gw stores all (D17), node logging out (D1), dial9 parked, staging for unknown layouts, properties as ClickHouse JSON (D27), monitoring-wire crate with Value/IntoValue (D28), self-contained alerts (D29), monitoring-gw catch-up via event-gw over NATS (D30), build pipeline as an event stream accepted, debug info export open (D31), requirements per ArtifactKind (D32), pipeline local for now, infra images only, strategies excluded (D33), this round build id only (D34). build entity apart from monitoring (D35). Notebooks monitoring-core-proposal rev 21, build-id rev 3; Abandoned 1h configurable (D36), image tied both ways (D37), BuildId+schemas in platform-core (D38-39), one build = one image (D40), build id sole identity (D41), builders file (D43), TS CLI (D44); agents are the main users (rev 4 proposal), one builds CLI (D46), timeline from revision create time (D47). build-id notebook rev 5; build service all Rust, http->handler->service->repository, no zod, TS only I/O (D48); build-service-implementation notebook (driver via host effects, proposals)"
 related_sessions:
   - SESS-00PYN1M
   - SESS-00PYCE2
   - SESS-00R0FYF
+  - SESS-00RRP6T
 agents:
   - claude-code:d3dec06a-db6e-4a54-b36e-6bd06a41da0b
   - claude-code:f226bb41-67de-4bfe-8890-f598c2e463bd
+  - claude-code:c94d0c2d-117f-4ce6-b0ca-236daa4304e1
+  - omp:01a18c64-7d2a-7538-a02f-e9be30b20142
 ---
 
 # SESS-00QKRBE: Engine monitoring SDK: logs, panics, metrics over a dedicated NATS
@@ -1095,3 +1098,197 @@ Agent's proposal (not decided):
   BinariesLinked/DebugInfoStored. Committed carries the requirements
   revision.
 Notebook revision 21.
+
+## D31. Build pipeline as an event stream accepted, except debug info export (2026-10-29)
+User accepts the "Build pipeline as an event stream" proposal (2026-10-21)
+up to and including the offline id: read every repo's commit before the
+build and refuse dirty trees; four enforcement layers (step receipts,
+server refuses incomplete commit, deploy refuses a digest without a
+committed build, `process.start` reports build id + GNU build id);
+one Avro `BuildEvent` schema with identity (build_id, seq), seq = last + 1;
+write every event to both the app server and the bucket; offline id = a
+snowflake with an instance id from a reserved range.
+Open: the bake / debug info export part (BUILD_ID via `env!`, split debug
+info in the builder stage, catalog read with `objcopy`, the
+`<service>-artifacts` target). The user is not familiar with how debug
+info is exported and asked for an explanation before deciding.
+The pipeline runs locally for now (local CLI), no CI server.
+
+## D32. Required build facts follow the artifact kind (2026-10-29)
+User accepts the "Required build facts per artifact kind" proposal
+(2026-10-21) as written: closed `ArtifactKind` (ElfExecutable,
+BunExecutable, WasmModule, ScriptSource), one exhaustive requirements table
+in an app-server TS module with a revision stored at commit, image scan +
+run-time identity reports against under-declaring, events keyed by
+artifact index.
+
+## D33. First scope: infra images only, one problem at a time (2026-10-29)
+The build pipeline covers only the images our infra deploys
+(`infra/docker-bake.hcl` targets: Rust services from `_rust_service`,
+status-board, `_web_service` application-server/activity-worker, etc.).
+Strategy images (activity-worker `build-strat` workflow, Cloud Build) are
+excluded for now; the earlier proposal bullet that the strategy workflow
+writes the same events is deferred, not rejected.
+Finding (verified 2026-10-29, buildx 0.37 / Docker 29.8): two bake targets
+in one `docker buildx bake` call that share a builder stage run it once;
+one can export to a local folder (`type=local`) while the other is the image.
+User question raised: whether `env!("BUILD_ID")` stops builds without a
+build id (answer: only if unset; an empty `ARG` still sets it), see reply.
+
+## D34. This round handles the build id only (2026-10-29)
+User: "We're only handling the build id here." Scope of the current design
+round is the build identity end to end (create, embed, record image,
+commit, process reports it, monitoring-gw checks it). Debug info export,
+the monitoring catalog and strategy images stay out of this round (D31's
+open debug info part stays open). The user asked for a Fable 5.1 advisor
+review of the build id suggestions and a dev-env notebook on the design.
+
+## Build id notebook and advisor review (2026-10-29; proposals, not decided)
+Notebook `build-id` (revision 2) in dev-env sess-00qkrbe covers only the
+build id. A Fable 5.1 advisor reviewed it; folded in as proposals:
+compile-time parse of BUILD_ID into `Pipeline(BuildId) | Development`
+(empty ARG gives `Some("")`, malformed id = compile error) via a macro
+expanded in the bin crate; Dockerfile guard; existing build.rs files lack
+`rerun-if-env-changed=GIT_REVISION` (separate bug); first slice drops GNU
+build id, artifact events, import job and liveness; run-time check compares
+`K_REVISION` → Cloud Run image digest with the build's digest; OCI label
+`io.stxr.build-id` read by Pulumi at deploy; TS: rolldown `define` for Bun
+executables, `ENV BUILD_ID` for status-board; `Abandoned` status for Open
+builds of killed runs; source snapshot must cover every repo cargo reaches;
+requirements table revision 1 requires no artifact facts.
+
+## D35. The build entity stands on its own, apart from monitoring (2026-10-29)
+User: "forget a bit about the monitoring sdk and monitoring gw when it comes
+to the build entity." The build design is not tied to monitoring-core,
+monitoring-gw, `process.start` or `Source.build_id`. Monitoring is at most a
+later consumer of the build id. The run-time check through monitoring-gw
+(K_REVISION → digest) and the `Pipeline | Development` wire shape in
+`Source` are dropped from the build design. The user also said the agent
+is not on the same wavelength and asked for more context and examples in
+the `build-id` notebook (rewritten as revision 3).
+
+## Decisions from the build-id notebook review (2026-10-29, dev-env annotations on revision 2)
+
+### D36. Abandoned builds, one hour, configurable
+An `Open` build with no event for a fixed time is marked `Abandoned` by the
+application server ("yeah, sounds good"). One hour is fine as the default;
+the timeout is configurable in the application server.
+
+### D37. Image tied to the build both ways
+Agreed: `ImagePushed` records the digest (build → image) and the image
+carries the `io.stxr.build-id` label plus the compiled id (image → build).
+
+### Not now: monitoring-gw, process.start, Source.build_id
+"let's not think about the monitoring gw yet" (restates D35). The user did
+not recognise `process.start` or `Source.build_id`: both exist only in the
+monitoring-core-proposal notebook, not in code (`telemetry::Source` has no
+build_id). Dropped from the build notebook.
+
+### Questions raised (answered in the notebook, revision 3)
+- Events table "too vague and abstract": wants concrete schemas and examples.
+- Where `BuildId` is defined; does it follow the `DomainId` derive of
+  entity-core / strategy-core?
+- Is having both GIT_REVISION and BUILD_ID as env vars wrong; is
+  GIT_REVISION still needed once a build id exists?
+- Can the Cloud Run revision be linked to the build id, e.g. as an attribute
+  in the Cloud Run config?
+- Is the CLI in Rust?
+- "deploy check also in the application server": unclear to the user.
+
+## Decisions from the build-id notebook review, revision 3 (2026-10-29)
+
+### D38. `BuildId` lives in a new `platform-core`
+"Okay, fine": `BuildId` (`#[derive(DomainId)] #[domain(prefix = "bld")]`,
+server-minted snowflake like `BacktestId`) goes in a new `platform-core`
+repo in the accounting-core layout (Rust entities + build.rs codegen + ts/).
+
+### D39. Build Avro schemas live in platform-core
+"platform core, for sure": the CLI and the application server share the
+build event schemas from platform-core's TS package; app-db registers them
+from there. Rejected: keeping them in app-db (infra would depend on app-db).
+
+### D40. One build = one Docker image
+Explicit rule asked for by the user: a build produces exactly one image.
+(An image may hold several binaries, e.g. backtest-post-processor ships
+`backtest-post-processor` and `backtest-runner`; still one build.)
+
+### D41. The build id becomes the only build identity
+"Ideally, build id is the only thing remaining that is a sole
+responsibility for everything build related." Keep GIT_REVISION for now,
+drop the unread `git.revision` label, move readers to the build id one at
+a time, alert policies last. End state: no GIT_REVISION.
+
+### D42. Assumptions confirmed
+A build records our source and the image, not Pulumi config, secrets or
+Cloud Run settings. "What runs now" = Cloud Run revisions joined to builds
+("simplest approach right now"). Builds run from the workspace layout (bake
+context at the workspace root). Failed and abandoned builds are kept.
+
+### D43. Allowed builders: a Pulumi-managed file, no server redeploy
+Like the invite list (application-server admission, GCS file reread on
+generation change): the people allowed to call the build endpoints are in a
+file managed by Pulumi; changing it must not need an application server
+redeploy. Replaces the agent's "add people to
+internal_oidc_allowed_service_accounts".
+
+### D44. The CLI is TypeScript
+"okay" to TypeScript on Bun in infra.
+
+### D45. Repos named by name and origin, not workspace path
+"how the repository is called and where its origin is" matters, not its
+folder in the workspace.
+
+### Preferences / questions from the same review
+- `time` → `elapsed_time` (user suggestion, applied in revision 4).
+- `service` by name or telemetry source ids? (answered in revision 4)
+- what is `requirements_revision`, what is `build_sources`, do dirty trees
+  include unstaged/untracked files, is the bake HCL still needed, can the
+  build id also be a service-level label (answered in revision 4).
+- NEW DIRECTION: the primary users of build info are AI agents debugging
+  problems; asked which optimizations to make for them, and whether there
+  is a platform API in infra for agents to browse builds, images and repos
+  or only a shared skill.
+
+## D46. One program for building and reading builds (2026-10-30)
+"agent and build cli can be the same program": one `builds` tool in infra
+with subcommands, `builds run <target>` (the pipeline) next to `resolve`,
+`show`, `diff`, `timeline`, `checkout`.
+
+## D47. Timeline from revision create time, for now (2026-10-30)
+"use create time for the services for now": the per-service timeline uses
+each Cloud Run revision's create time as the moment it went live. Holds
+because infra sends all traffic to the latest revision
+(`TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST`; worker pools run their latest
+revision). Cloud Run audit logs (exact traffic switches) only when rollbacks
+or traffic splits start.
+
+Agent explanation given, not contested: one pipeline for every infra image
+(snapshot → create → define → bake + push → commit); per-image differences
+live in the bake HCL target and the Dockerfile's ignore file. It is not an
+activity-worker workflow; it runs locally (D31).
+
+## D48. The build service is Rust end to end; TypeScript only does I/O (2026-10-30)
+User direction for the application server side of builds, going further
+than email sign-in (SESS-00RRP6T D6): the core is Rust and only the I/O is
+TypeScript; because the build service is new, build it completely in Rust
+with the same adapter and handler pattern. Layers: http -> handler ->
+service -> repository, "where the handler is independent from transport
+protocol" (the user likes this pattern). No zod schemas describe the
+requests any more: validation happens in Rust entities; TypeScript passes
+the data in and executes I/O ("parse the HTTP response and execute I/O").
+Affects: application-server-core (new builds module), platform-core,
+structure-web api (thin host), the infra `builds` program.
+
+Notebook `build-service-implementation` in dev-env sess-00qkrbe holds the
+agent's plan; all of it is proposal, not decided. Main proposals: async Rust
+services that pause at host effects (Query, ReadObject, MintId, Log) with a
+synchronous `step` wasm call and a 64 effect bound, instead of
+wasm-bindgen-futures or hand-written phases; SQL statements in a Rust
+Postgres adapter run through the existing `stxr.pg_client.query` RPC, tables
+still in drizzle, a PREPARE test over every statement; platform-core split
+into `platform-core` (entities) and `platform-wire` (Avro schema derived from
+Rust, JSON request shapes); ids minted by the host's snowflake generator;
+authentication (Google ID token) in TS, builder-list authorization in Rust;
+tables without foreign keys or create_time, a `state` column. Revises D39
+(schemas from Rust, not platform-core TS) pending the user. Open: driver
+choice, read access, builder list format, the program's split.

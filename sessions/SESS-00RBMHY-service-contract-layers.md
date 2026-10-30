@@ -3,6 +3,7 @@ create_time: 2026-10-23T16:28:46Z
 title: "Layers of a service contract: encoding, meaning, constraints, domain, specification"
 summary: "Open, no decisions. Round 4: agent proposes text source + compiled JSON model + checked-in lock file (field ids pinned), separate model/encoding/transport/language-mapping files, generators in Rust for Rust/TS/Python, viewer generated from the compiled model. Round 3: CUE (and Pkl, Nickel) considered as the constraint language; agent: usable only as build-time authoring layer emitting the JSON model, recommends own DSL for contracts and CUE for config files. Round 2 (user direction, not yet a decision): Smithy-style split of model / encoding binding / transport binding in an own DSL, FlatBuffers tables for zero-copy, generate everything but I/O, same IDL for Rust engine services over NATS and later Zenoh (would supersede DEC-0C0TX's rejection of a text DSL and SESS-00QGNFK D18). Agent proposal R2: constraints only on named types, closed data vocabulary (no regex, no CEL), named checks with sample vectors as escape hatch, few cross-field forms, receive pipeline bytes -> verified -> checked view, domain mapping in per-language binding files, operation patterns (paginated, idempotent, unary/stream/event), examples as conformance, DSL emits a JSON model. Round 1: how to split a service contract into layers (transport, encoding, shape, value rules, domain types, rules needing server state, behaviour, protocol, deployment) so clients and servers are generated per language instead of rebuilt per service; market-info-server as the example. Two parallel agent answers (started by mistake in ~/personal/finance, moved here): A proposes protobuf + protovalidate + own domain options + shared google.rpc.Status style error envelope + conformance examples; B builds on the market-info-protocol prototype and DEC-0C0TX, adds protocol/deployment layers and language-neutral byte vector conformance. Findings: undecodable requests never answered, shared reply subject, limit clamped silently, domain types are the wire format. Open: definition form, wire vs domain type, operation patterns, client languages and outside-VPC transport, clamp vs reject limit."
 related_sessions:
+  - SESS-00RR74R
   - SESS-00Q639F
   - SESS-00Q613G
   - SESS-00QGNFK
@@ -12,6 +13,7 @@ agents:
   - claude-code:a564375e-eba3-43b5-a734-dc64bc05e24e
   - claude-code:31734df2-97d5-42b8-823b-3a9caae8e23e
   - claude-code:03fa3d82-e7b3-4788-9a2c-5bf7e84016cc
+  - claude-code:47546fef-123a-48ba-86d5-074d82bf7c20
 ---
 
 # SESS-00RBMHY: Layers of a service contract: encoding, meaning, constraints, domain, specification

@@ -2,7 +2,10 @@
 create_time: 2026-10-06T07:20:47Z
 title: "CME options in market info"
 summary: "Options domain (D14-D19), id hash venue+type (D21), Databento migration (D22-D24, D27; D51: 840 folders copied and verified, old folders not deleted), consumers (D25), #[kind] derive (D26), backtest feed (D28), review fixes, docs, IdHashInput, asset ids in market-info-core, CME data in cme-globex (D29-D38). 2026-10-10: market-info-core #19 merged; instruments typed by market + venue kinds + MarketInfo::Option (D40, DEC-0CDBZ proposed); option arms downstream (D41); portfolio value on contract terms (D42); trading schedules in market-info-repo (D43). D45: pushed and in PRs (market-info-core #20 new, market-info #27, trade #14, backtest-post-processor #14, sim-gw #16, databento-mkt-data #5, event-gw #16, knowledge-base #137); not committed: option arms and schedule repo in application-server, client, dsl-runtime, strats_v2, structure-strat-template-core (need market-info-release branches). D46: structure-web salvage of the deployment branch (logs event_time #172, small fixes #173 merged; Avro waits). D47: snowflake backtest ids + per-start/per-backtest limit_order_offset_bps, 11 PRs open (template-core #29, structure-web #174/#175, infra #29, dfd #13/#14, domain #20, dsl-runtime #27, strategy-core #16, dsl-processor-core #18, structure-sdk #1). D48: msg-schemas #31 + messaging #52 remove ComputeBacktestIdRequest; KB #138 (DEC-0CDPA, DEC-0CDPB); protocol Backtest response carries the offset. D49: Avro blobs #176 with backtests.strategy_config; #175 force-pushed (offset in StrategyConfig, no column); strategy-core #17 node mappings; drop-strategies.sql. D50: deployed to production (template #9, runtime d5c6044, migration, pulumi up)"
-related_sessions: []
+related_sessions:
+  - SESS-00RR74R
+agents:
+  - claude-code:47546fef-123a-48ba-86d5-074d82bf7c20
 ---
 
 # SESS-00PXT2F: CME options in market info

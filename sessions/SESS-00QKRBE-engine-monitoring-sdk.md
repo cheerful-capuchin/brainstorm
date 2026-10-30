@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-14T15:06:22Z
 title: "Engine monitoring SDK: logs, panics, metrics over a dedicated NATS"
-summary: "monitoring-core + monitoring facade (D13), handle in LogScope not global (D9, tick() D10), two lanes logs+metrics (D2), per-severity flood budgets (D16), argus-style events with kind + revision ids (D5, D21), global u128 event id (D22), binary catalog + stdout JSON backup (D19), no JetStream, Source (D11), build id record (D15), monitoring-gw + event-gw stores all (D17), node logging out (D1), dial9 parked, staging for unknown layouts, properties as ClickHouse JSON (D27), monitoring-wire crate with Value/IntoValue (D28), self-contained alerts (D29), monitoring-gw catch-up via event-gw over NATS (D30), build pipeline as an event stream accepted, debug info export open (D31), requirements per ArtifactKind (D32), pipeline local for now, infra images only, strategies excluded (D33), this round build id only (D34). build entity apart from monitoring (D35). Notebooks monitoring-core-proposal rev 21, build-id rev 3; Abandoned 1h configurable (D36), image tied both ways (D37), BuildId+schemas in platform-core (D38-39), one build = one image (D40), build id sole identity (D41), builders file (D43), TS CLI (D44); agents are the main users (rev 4 proposal), one builds CLI (D46), timeline from revision create time (D47). build-id notebook rev 5; build service all Rust, http->handler->service->repository, no zod, TS only I/O (D48); build-service-implementation notebook (driver via host effects, proposals)"
+summary: "monitoring-core + monitoring facade (D13), handle in LogScope not global (D9, tick() D10), two lanes logs+metrics (D2), per-severity flood budgets (D16), argus-style events with kind + revision ids (D5, D21), global u128 event id (D22), binary catalog + stdout JSON backup (D19), no JetStream, Source (D11), build id record (D15), monitoring-gw + event-gw stores all (D17), node logging out (D1), dial9 parked, staging for unknown layouts, properties as ClickHouse JSON (D27), monitoring-wire crate with Value/IntoValue (D28), self-contained alerts (D29), monitoring-gw catch-up via event-gw over NATS (D30), build pipeline as an event stream accepted, debug info export open (D31), requirements per ArtifactKind (D32), pipeline local for now, infra images only, strategies excluded (D33), this round build id only (D34). build entity apart from monitoring (D35). Notebooks monitoring-core-proposal rev 21, build-id rev 3; Abandoned 1h configurable (D36), image tied both ways (D37), BuildId+schemas in platform-core (D38-39), one build = one image (D40), build id sole identity (D41), builders file (D43), TS CLI (D44); agents are the main users (rev 4 proposal), one builds CLI (D46), timeline from revision create time (D47). build-id notebook rev 5; build service all Rust, http->handler->service->repository, no zod, TS only I/O (D48); no Port suffix (D49), platform-core rust/crates layout (D50), contracts crate in application-server (D51), no V1 Avro types per SESS-00RRP6T D24 (D52); reads open to stxr.io (D53), build-contracts (D54), builds program TS + wasm (D55), StatementId catalog (D56); ts/packages/platform-core (D57), argus naming in Rust (D58), typed ObjectOp with generic ObjectRef (D59), host entropy (D60), Rust snowflake own instance id (D61); build-service-implementation notebook rev 4 (event sourced builds with feed_heads orderand + builds:changes, argus macros in wasm custom section, Rust-owned tables + startup TableRevision, proposals); drizzle schema hand-written, not generated (D62), orderand per feed, no global sequencer (D63), Avro stored + mapper to feed encoding (D64), no as_of_ fields (D65); notebook rev 5 proposals: Option-free create/decide_append split, views from fold, domain_events table, feed_orderands, Read Committed, builds:changes tail_cursor, protobuf feed mapper, create request_id"
 related_sessions:
   - SESS-00PYN1M
   - SESS-00PYCE2
@@ -12,6 +12,7 @@ agents:
   - claude-code:f226bb41-67de-4bfe-8890-f598c2e463bd
   - claude-code:c94d0c2d-117f-4ce6-b0ca-236daa4304e1
   - omp:01a18c64-7d2a-7538-a02f-e9be30b20142
+  - omp:01a18e01-cf13-76c1-bbb6-b117b6dbbc9c
 ---
 
 # SESS-00QKRBE: Engine monitoring SDK: logs, panics, metrics over a dedicated NATS
@@ -1292,3 +1293,268 @@ authentication (Google ID token) in TS, builder-list authorization in Rust;
 tables without foreign keys or create_time, a `state` column. Revises D39
 (schemas from Rust, not platform-core TS) pending the user. Open: driver
 choice, read access, builder list format, the program's split.
+
+## Decisions from the build-service-implementation review (2026-10-30, dev-env annotations on revision 1)
+
+### D49. No `Port` suffix
+"Let's get rid of 'Port' in the name, I don't like it"; "Let's just call it
+repository if that's what it is." Traits are `BuildRepository`,
+`BuilderList`; adapters `PostgresBuildRepository`, `GcsBuilderList`.
+Replaces dev-docs naming-conventions' `*Port` for this service; the agent
+proposes amending that line in the same PR.
+
+### D50. platform-core crate layout
+`platform-core/rust/crates/platform-core` + `platform-core/rust/crates/platform-wire`.
+
+### D51. Request/response contracts are not in platform-core
+User: keep the wire and the contracts separate; the create-build request
+belongs to the build service, not platform-core. Create a crate in the
+application server ("build contracts or platform contracts") holding the
+requests and responses and, later, the protocols and codecs. Name open:
+the agent proposed `build-contracts`; the user offered both names.
+platform-wire keeps only the stored event format.
+
+### D52. SESS-00RRP6T D24 applies to build events
+"stop this v1 bs": no V1/V2 record types; one set of Rust types
+(`BuildEventRecord`), acceptance by `can_read(writer, current)`, as the user
+settled for the invite file and template bundle.
+
+### Questions answered in revision 2 (proposals, not decisions)
+The user asked which I/O model tigerbeetle, tina, turso and Zig use and
+whether theirs beats async/await; whether the Effect design was the best
+possible; how drizzle and Rust SQL stay in sync; whether BuildsError matches
+the TS repos. Two advisors (claude-fable-5-1 and gpt-5.6-sol at xhigh,
+agent definitions advisor-fable / advisor-gpt-sol in ~/.omp/agent/agents)
+reviewed. Revision 2 proposes: keep async fn paused at host effects (turso's
+JS binding runs the same stepSync loop; fibers have no wasm32, callbacks need
+an in-core loop); one effect at a time, numbered; SQL by StatementId catalog
+with a Statement trait; typed host failures; clock and id as inputs; logs on
+Step; 40001 restarts in the host; drizzle owns tables, Rust owns statements,
+checked by PREPARE + pg_prepared_statements types; single-object decode
+looks the writer schema up by fingerprint in avro_schemas; reasons
+registered per service, FAILED_PRECONDITION for NOT_A_BUILDER, canonical
+ENTITY_NOT_FOUND, internal errors answered by the host. Open: read access,
+builder list format, contracts crate name, program split, D39 revision.
+
+## Decisions from the build-service-implementation review (2026-10-30, dev-env annotations on revision 2)
+
+### D53. Reads open to stxr.io
+"let's do open to stxr.io": get/list need any verified stxr.io Google
+identity; writes (create, append) need the builder list (D43).
+
+### D54. The contracts crate is `build-contracts`
+Settles D51's name: `application-server/crates/build-contracts`.
+
+### D55. The builds program is TypeScript + the core's wasm
+Keeps D44; the program's decisions come from Rust through wasm.
+
+### D56. SQL statements referenced by `StatementId`
+The user likes the closed statement catalog ("quite elegant", "very good
+decision") and the PREPARE + pg_prepared_statements type check ("smart").
+
+### Direction and questions from the same review (not decided)
+- Clock and ids: the user would let business logic mint ids and inject time
+  (and a crypto randomness source) through an I/O-like interface, not read
+  the clock once in the host, so time can be simulated later; asked whether
+  the snowflake generator should move into Rust with the host passing time.
+- Bucket access: ReadObject vs an HTTP request built in Rust (tagged GCP so
+  the host adds the token) vs a typed GCS op the host maps to HTTP/gRPC.
+- Logs: catalog ids like SQL statements, as in the monitoring SDK.
+- Query builder instead of plain SQL strings; drizzle interop?
+- Does tina restart work like "host drops the operation and restarts"?
+- User view: async's real problem is hidden control flow; explicit effects
+  avoid hand-written state machines.
+- Asked for a rule or skill in application-server capturing the I/O model.
+- Asked whether `ts/` means `ts/packages/platform-core`.
+Second advisor round (advisor-fable, advisor-gpt-sol) answered; notebook
+revision 3 proposes (not decided): an injected `Runtime` (host writes the
+clock on every step, Rust snowflake twin in stxr-domain that carries instead
+of spinning, own instance id 2, `Entropy` trait with getrandom on wasm);
+retries re-mint (reverses rev 2); `ObjectOp::{Head, Get}` on a closed
+`ObjectId` mapped by the host to the gcp client (GPT Sol preferred a
+Rust-built HTTP effect with a GCP auth tag); a numbered `LogEvent` catalog
+with a compile-time-checked `log!` macro, records on each Step, host renders
+via argus (linkme is off on wasm); table/column constants plus a small query
+assembler (GPT Sol preferred SQL text in a `statement!` macro; drizzle
+interop rejected); restart contract like turso (only 40001, fresh tx, fresh
+operation, bounded); "What async still hides" rules and clippy denies; a
+ten-point draft for a new application-server/AGENTS.md; reads check the
+token's `hd` claim, new `NOT_IN_ORGANIZATION` (PERMISSION_DENIED). Open:
+bucket op vs HTTP, assembler vs statement!, getrandom vs host bytes, core
+instance id, rule home, builder list format, D39.
+
+## Decisions from the build-service-implementation review (2026-10-30, dev-env annotations on revision 3)
+
+### D57. platform-core TS package at `ts/packages/platform-core`
+After the agent said the other cores use `ts/` as the package root, the user
+chose "let's do ts/packages/platform-core" anyway.
+
+### D58. Argus naming in Rust
+"maybe let's stick to the argus naming in the rust part as well": the Rust
+log API is argus (`argus::info!`, `argus::{level}!`), mirroring the
+monitoring SDK interface, not a separate `LogEvent`/`log!` vocabulary.
+Rejected: revision 3's hand-written `LOG_CATALOG` array and `LogEvent` enum
+("I don't like that. WASM has no static memory? There is nothing we can do
+in compile-time?").
+
+### D59. Bucket access: Fable's typed object operation, generic object names
+"Fable" (typed `ObjectOp` Head/Get mapped by the host to the gcp client, not
+an HTTP request built in Rust), but "not have the object id as a number and
+allow some generic behaviour": the object is a string or a structured value,
+not a closed `ObjectId` enum ("this is a step too far").
+
+### D60. Randomness: Fable's suggestion
+"I would go with whatever Fable suggests": random bytes are a host input;
+the core does not call getrandom.
+
+### D61. Snowflake in Rust with its own instance id
+"smart" (carry instead of spin, never regress) and "full support" (the core
+gets its own instance id; TS repositories move to the core's generator
+later). The user questioned placing the generator inside the Runtime: he
+expects one generator created once as wasm module state and injected as an
+argument to whatever needs it, with the generator taking the runtime clock.
+
+### Questions raised (not decided)
+- SQL: "sea-query I think is a good lib, no?"; evaluate sea-query against the
+  hand-made assembler; "if the schema changes, I want a type error in rust";
+  idea: a revision id per table, verified against the database at program
+  start, like notify-gw's ClickHouse startup check (SESS-00R0FYF).
+- Event sourcing (new direction to explore): build the feature fully event
+  sourced: an event per operation stored in Postgres (Avro, avro_schemas),
+  views derived from events, all mutations through the event pipeline, each
+  mutation with its own orderand so a caching client asks for everything
+  after its last orderand. Focus on domain events first; audit and activity
+  events (brainstorm/prompts/domain-events/classification.md) later. Relates
+  to ISS-0BBJ6.
+Third advisor round (advisor-fable, advisor-gpt-sol) answered; notebook
+revision 4 proposes (not decided):
+- Logger: `argus::{level}!(ctx, "name", { key: Type = expr }, description = …)`
+  mirroring the monitoring SDK; one pointer-free static descriptor per call
+  site in a wasm custom section `argus.catalog` (cfg_attr wasm32; verified by
+  both advisors through wasm-bindgen + wasm-opt with the release flags; Bun
+  reads it with `WebAssembly.Module.customSections`); kind/revision from
+  const fn hashes (D21, D25); records carry kind, revision, values; host
+  compiles the module, reads the section, then instantiates; flood budgets
+  in the host by kind (GPT Sol preferred in-core). `linkme` has no wasm
+  target; `inventory` works but is a runtime registry. Crate
+  `application-server/crates/argus`.
+- Event sourcing for builds: only write = append events; `builds` and
+  `build_sources` are projections written by the event store in the same
+  transaction; pure `decide(stream, command, now)`; `BuildEventStore {load,
+  append, idle}`, `BuildReads {get, list, changes, events}`; orderand from a
+  `feed_heads(feed, head, published)` row advanced inside the writing
+  transaction and locked last (streams first, ascending ids), the turso
+  commit-timestamp idea; snowflake and sequences rejected as cursors
+  (visibility gap); xid8 watermark named as the scaling path; `builds:changes`
+  with full summaries, `list` returns `as_of_orderand`, filters on immutable
+  fields only; `build_events` doubles as outbox, `publish` operation with a
+  `Publish` effect, at least once, dedup by `event_id`; server-assigned
+  fields in columns, not in the Avro bytes; rebuild operation; no snapshots.
+  GPT Sol differed: separate outbox table, command receipts with a stable
+  CommandId, a typed `:apply` endpoint instead of appending encoded events.
+- Tables: Rust owns the build tables (`Column<T>`), drizzle definitions
+  generated from Rust, per-table `TableRevision` checked at startup (refuse
+  to start), aligned with event-gw's uncommitted ClickHouse TableRevision;
+  typed assembler kept over sea-query (sea-query builds for wasm32 but does
+  not type values; switch point named). GPT Sol preferred vendoring sea-query.
+- Runtime holds clock and host-provided entropy only; `SnowflakeGenerator`
+  is module state injected into services, `next(&clock)`.
+Open: event sourcing go/no-go, assembler vs sea-query, create idempotency
+key, Avro encoding on the event-gw feed, core instance id, rule home,
+builder list format, D39.
+
+## Decisions from the build-service-implementation review (2026-10-30, dev-env annotations on revision 4)
+
+### D62. Drizzle schema hand-written, not generated from Rust
+"generating drizzle sounds like a bad plan. Let's not do that. I guess if we
+have an issue, the tests will catch it and, furthermore, the revision of the
+table will catch it, so, I guess, we're fine for now"; then "just hand roll
+drizzle schema, I guess we'll take the pain for now of maintaining copies".
+Rejects revision 4's drizzle definitions generated from Rust `Column<T>`.
+The build tables exist twice: hand-written drizzle in structure-web app-db
+(drizzle-kit keeps writing the migrations) and the Rust column declarations
+the statements use; drift is caught by the tests and the startup table
+revision check. Affects application-server-core (no drizzle codegen),
+structure-web app-db.
+
+### D63. One orderand per feed, no global sequencer
+"I don't think we need a global sequencer, but we do need an orderand per
+feed." Rejects a sequencer service (event-gw's ingestion sequencer style) in
+the write path and any orderand shared across feeds. The builds feed has its
+own orderand.
+
+### D64. Avro is the stored event format; a mapper produces the feed encoding
+"I think avro is superior for storage because it already handles revisions
+and versioning. I don't think flatbuffers or protobuf has this capability
+built-in? There would probably be a mapper from avro to whatever the feed is
+needed". Answers revision 4's open item 4 in direction: events stay Avro in
+storage; whatever encoding the event-gw feed needs is produced by a mapper
+from the stored event. Where the mapper lives and which feed encoding are
+still open.
+
+### D65. No `as_of_` fields
+"I don't like this `as_of_` pattern, I think google in their
+https://google.aip.dev/ are also against it". Rejects revision 4's
+`as_of_orderand` on the list response; the replacement name and shape are
+open.
+
+### Direction and questions from the same review (not decided)
+- `decide(stream: Option<&Stream>, …)`: "The moment I see an option<> it's a
+  smell to me, something is off." Asked for research into event sourcing
+  techniques, with advisors, for "an elegant solution"; "The more ideas you
+  generate and collaborate on, the better".
+- "Does it make sense to store the commands in the database to have a clear
+  provenance or is it too much?"
+- Asked what a feed head is.
+- Asked how turso, tigerbeetle and foundationdb solve out-of-order
+  visibility of commit numbers ("similar to CME and HFT architecture").
+- "are we calling the table the build_events or do we have a global events
+  table with all the events there? … in the future, I assume, we can put
+  others in there"
+- Whether the create command id copies tigerbeetle's request number.
+- "u64 is not a bigint?" (argus host rendering u64 as a decimal string).
+Fourth advisor round (advisor-fable on claude-fable-5-1; GPT-5.6 Sol via a
+copy of advisor-gpt-sol routed through github-copilot, advisor-gpt-sol-copilot,
+because openai-codex hit its usage limit). Notebook revision 5 proposes (not
+decided):
+- No `Option` in the write path: `Build::create` takes no state;
+  `Stream::decide_append` / `Build::decide_idle` take a loaded stream and
+  return closed `AppendDecision {Append, AbandonThenRefuse, Resend}` /
+  `IdleDecision`; views computed from the folded `Build` (`builds_row`,
+  `source_rows`), removing `Projection::project(Option<Row>)`, `BuildCommand`,
+  `decide`, `EventBatch`. Both advisors ranked this first. Split: GPT Sol
+  `load -> Result<Stream, NotFound>` with separate store `create`/`append`
+  (chosen in the notebook); Fable `find -> Option` + `ok_or` and an
+  `Expected {NoStream, After(Seq)}` enum. Option stays on reads by id.
+- No command table; refusals are argus records; the create request id is
+  the only command datum stored.
+- One `domain_events` table for all feeds: PK (feed, stream_id, seq),
+  unique (feed, orderand), feed smallint closed set; views per entity.
+- "Feed head" renamed `feed_orderands (feed, last_orderand)` (GPT Sol);
+  publish position split into `feed_publications`; publish reads and sends
+  outside a transaction, then a guarded update.
+- Ordering explained as two families: single writer (tigerbeetle, CME) vs
+  early numbers + watermark (FoundationDB, turso, event-gw sequencer); the
+  counter row is family 1; rev 4's turso analogy corrected.
+- Writes at Read Committed (both advisors) instead of the api's default
+  Serializable; sweep locks all its streams in one statement first (Fable);
+  restarts on 40001 and 40P01.
+- Catch-up: `builds:changes?cursor=` from empty cursor answering
+  `{list, tail_cursor, more}` like positions:poll (GPT Sol, chosen); Fable's
+  `sync_token` from the list shown as the alternative; opaque HMAC Cursor;
+  `after`/`after_seq` removed (AIP-140 prepositions, AIP-158 opaque tokens).
+- Feed stays protobuf: builds feed + codec in data-feed-definitions,
+  `FeedKind::BuildEvents`, mapper BuildEvent -> prost in the core next to
+  feed.rs (GPT Sol; Fable: in platform-wire). event-gw decodes protobuf only.
+- Create idempotency: AIP-155 `request_id` (UUID) stored in `BuildCreated`
+  and unique `builds.create_request_id` (GPT Sol; Fable: column beside the
+  seq 0 event); resend returns the first build; other body ->
+  `REQUEST_ID_REUSED` 409. Not tigerbeetle request numbers (sessions,
+  eviction) but its client-chosen ids (`exists_with_different_*`).
+- argus host decodes u64 as bigint; sinks render text via serialize_json.
+- Startup column check by name via pg_attribute/format_type, order ignored,
+  undeclared columns must be nullable or defaulted; runs in structure-web
+  tests; event-gw's revision idea copied, not shared (GPT Sol; Fable: share).
+Open: event sourcing go/no-go, NotFound vs Option at load, one events table,
+Read Committed, catch-up shape, create request_id, feed mapper location,
+assembler vs sea-query, core instance id, rule home, builder list format, D39.

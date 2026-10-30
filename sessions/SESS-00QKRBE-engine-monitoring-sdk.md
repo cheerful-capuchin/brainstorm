@@ -1,7 +1,7 @@
 ---
 create_time: 2026-10-14T15:06:22Z
 title: "Engine monitoring SDK: logs, panics, metrics over a dedicated NATS"
-summary: "monitoring-core + monitoring facade (D13), handle in LogScope not global (D9, tick() D10), two lanes logs+metrics (D2), per-severity flood budgets (D16), argus-style events with kind + revision ids (D5, D21), global u128 event id (D22), binary catalog + stdout JSON backup (D19), no JetStream, Source (D11), build id record (D15), monitoring-gw + event-gw stores all (D17), node logging out (D1), dial9 parked, staging for unknown layouts, properties as ClickHouse JSON (D27), monitoring-wire crate with Value/IntoValue (D28), self-contained alerts (D29), monitoring-gw catch-up via event-gw over NATS (D30), build pipeline as an event stream accepted, debug info export open (D31), requirements per ArtifactKind (D32), pipeline local for now, infra images only, strategies excluded (D33), this round build id only (D34). build entity apart from monitoring (D35). Notebooks monitoring-core-proposal rev 21, build-id rev 3; Abandoned 1h configurable (D36), image tied both ways (D37), BuildId+schemas in platform-core (D38-39), one build = one image (D40), build id sole identity (D41), builders file (D43), TS CLI (D44); agents are the main users (rev 4 proposal), one builds CLI (D46), timeline from revision create time (D47). build-id notebook rev 5; build service all Rust, http->handler->service->repository, no zod, TS only I/O (D48); no Port suffix (D49), platform-core rust/crates layout (D50), contracts crate in application-server (D51), no V1 Avro types per SESS-00RRP6T D24 (D52); reads open to stxr.io (D53), build-contracts (D54), builds program TS + wasm (D55), StatementId catalog (D56); ts/packages/platform-core (D57), argus naming in Rust (D58), typed ObjectOp with generic ObjectRef (D59), host entropy (D60), Rust snowflake own instance id (D61); build-service-implementation notebook rev 4 (event sourced builds with feed_heads orderand + builds:changes, argus macros in wasm custom section, Rust-owned tables + startup TableRevision, proposals); drizzle schema hand-written, not generated (D62), orderand per feed, no global sequencer (D63), Avro stored + mapper to feed encoding (D64), no as_of_ fields (D65); notebook rev 5 proposals: Option-free create/decide_append split, views from fold, domain_events table, feed_orderands, Read Committed, builds:changes tail_cursor, protobuf feed mapper, create request_id"
+summary: "monitoring-core + monitoring facade (D13), handle in LogScope not global (D9, tick() D10), two lanes logs+metrics (D2), per-severity flood budgets (D16), argus-style events with kind + revision ids (D5, D21), global u128 event id (D22), binary catalog + stdout JSON backup (D19), no JetStream, Source (D11), build id record (D15), monitoring-gw + event-gw stores all (D17), node logging out (D1), dial9 parked, staging for unknown layouts, properties as ClickHouse JSON (D27), monitoring-wire crate with Value/IntoValue (D28), self-contained alerts (D29), monitoring-gw catch-up via event-gw over NATS (D30), build pipeline as an event stream accepted, debug info export open (D31), requirements per ArtifactKind (D32), pipeline local for now, infra images only, strategies excluded (D33), this round build id only (D34). build entity apart from monitoring (D35). Notebooks monitoring-core-proposal rev 21, build-id rev 3; Abandoned 1h configurable (D36), image tied both ways (D37), BuildId+schemas in platform-core (D38-39), one build = one image (D40), build id sole identity (D41), builders file (D43), TS CLI (D44); agents are the main users (rev 4 proposal), one builds CLI (D46), timeline from revision create time (D47). build-id notebook rev 5; build service all Rust, http->handler->service->repository, no zod, TS only I/O (D48); no Port suffix (D49), platform-core rust/crates layout (D50), contracts crate in application-server (D51), no V1 Avro types per SESS-00RRP6T D24 (D52); reads open to stxr.io (D53), build-contracts (D54), builds program TS + wasm (D55), StatementId catalog (D56); ts/packages/platform-core (D57), argus naming in Rust (D58), typed ObjectOp with generic ObjectRef (D59), host entropy (D60), Rust snowflake own instance id (D61); build-service-implementation notebook rev 4 (event sourced builds with feed_heads orderand + builds:changes, argus macros in wasm custom section, Rust-owned tables + startup TableRevision, proposals); drizzle schema hand-written, not generated (D62), orderand per feed, no global sequencer (D63), Avro stored + mapper to feed encoding (D64), no as_of_ fields (D65); notebook rev 5 proposals: Option-free create/decide_append split, views from fold, domain_events table, feed_orderands, Read Committed, builds:changes tail_cursor, protobuf feed mapper, create request_id; typed assembler (D66), copy table revision idea (D67), event sourcing go (D68), single domain_events table (D69), tail_cursor (D70), create request_id (D71), core instance id 2 (D72), application-server/AGENTS.md (D73); rev 6 proposals: Read Committed + statement access rule, feed_kind/subject table, mapper in application-server-core"
 related_sessions:
   - SESS-00PYN1M
   - SESS-00PYCE2
@@ -1558,3 +1558,82 @@ decided):
 Open: event sourcing go/no-go, NotFound vs Option at load, one events table,
 Read Committed, catch-up shape, create request_id, feed mapper location,
 assembler vs sea-query, core instance id, rule home, builder list format, D39.
+
+## Decisions from the build-service-implementation review (2026-10-30, dev-env annotations on revision 5)
+
+### D66. Typed statement assembler, not sea-query; revisit with joins
+"Okay, use the fable suggestion. If we have joins, we'll revisit"; on the
+open item: "let's go with the recommended option". Statements are built by
+the small typed assembler over `Column<T>` constants in the core. sea-query
+is rejected for now (it does not type values); the switch point is the first
+need for joins.
+
+### D67. Copy the table revision idea; do not share a crate with event-gw
+"copy the revision idea". application-server copies event-gw's
+TableRevision/startup column check idea instead of depending on a shared
+crate (repos stay independent).
+
+### D68. Build service goes event sourced as in revision 5
+On the open item (event sourcing with split rules, event store, views from
+the folded build, one counter row per feed, `builds:changes`): "I like your
+recommendatation". Replaces revision 3's direct writes. Read Committed and
+the load/NotFound shape are not part of this decision (still open).
+
+### D69. One events table for every feed; its structure is open
+"singe table, the question is the structure of that table". Also asked
+what identifies a feed ("what's a feed -> u256?", "or is it the feed kind
+and feed subject id from the data feed ideas in the brainstorm sessions?").
+
+### D70. Catch-up through `tail_cursor`
+"let's do tail_cursor": `builds:changes` answers `{ list, tail_cursor, more }`
+like `positions:poll`, starting from an empty cursor. Fable's `sync_token`
+rejected.
+
+### D71. `create` idempotency by request id
+"recommended option": a `request_id` the caller sends with `create`, kept in
+`BuildCreated` and unique on `builds`; a resend returns the first build.
+
+### D72. The core's snowflake generator has its own instance id
+"yeah, for sure. different instance id" (2, from config, as proposed).
+
+### D73. The rule lives in application-server/AGENTS.md
+"agents file is fine". The SPEC promotion was not addressed.
+
+### Questions from the same review (not decided)
+- Read Committed: "Isn't read committed a dangerous way to handle postgres?
+  Isn't there something in between that satisfies our needs?"
+- "puts it in core - which core?" and "I'm not sure what core means here and
+  how is the mapping going to be done" (the feed mapper).
+- `load` answering NotFound vs `find -> Option`: "I didn't understand this
+  part".
+- Builder list format: "what's this for?"
+- D39: "i don't know what d39 is, explain the full context".
+Fifth advisor round (advisor-fable, advisor-gpt-sol-copilot; both ran
+experiments in a throwaway database on the local Postgres 18). Notebook
+revision 6 proposes (not decided):
+- Read Committed for create/append/abandon_idle/rebuild, safe because a
+  write transaction only locks, reads locked rows, reads append-only tables
+  or writes; enforced by a per-statement `Access` closed set and a
+  `TransactionNeed {None, Write, SnapshotRead}`. Measured: Repeatable Read
+  and Serializable abort the counter-row update with 40001 even as first
+  statement or after pg_advisory_xact_lock; LOCK TABLE first works but
+  serializes all feeds; in-host serialization holds on one instance only.
+  Commit visible before lock release verified in xact.c (Fable).
+- domain_events structure: `feed_kind smallint` (StoredFeedKind, the data
+  feed kind), `stream_id` = subject id (BuildId), orderand per feed kind,
+  128-bit event_id/trace_id as uuid (ULID minted from clock + host entropy;
+  GPT Sol; Fable kept the snowflake widened on the wire), no type or feed
+  revision column; FeedId (u256) = kind id ‖ subject id computed at publish,
+  not stored; DataFeedSubject::Build(BuildSubject) in data-feed-core.
+- Mapper in application-server-core builds/infrastructure/feed.rs behind a
+  `BuildFeed` trait: pure function filling the prost BuildDomainEvent,
+  FeedEncoder::encode_build_domain_event (Fable; GPT Sol: trait view +
+  codec producer). Publish effect carries feed_kind, feed_subject,
+  feed_revision, encoding; ordering key = feed_subject.
+- Fixes: rebuild takes `lock table builds, build_sources in exclusive
+  mode`, upserts, no delete-reinsert, no counter lock; counter is an upsert
+  (first event of a feed); extra select for AlreadyCreated; sweep `for update
+  skip locked`; demo feed revision ids hash the seed (no revision bump on
+  content change).
+Open: Read Committed, domain_events structure, load NotFound vs Option,
+mapper style, builder list format, D39 revision.
